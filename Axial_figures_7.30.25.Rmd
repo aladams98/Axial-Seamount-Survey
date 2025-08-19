@@ -1,0 +1,156 @@
+---
+title: "Axial2023_figures"
+author: "Alexis Adams"
+date: "2025-07-30"
+output: html_document
+---
+
+#Set up environment
+
+```{r}
+library(tidyverse)
+
+axial_18S_asv_FinalProduct <- read_csv("R/Databases/axial_18S_asv_FinalProduct.csv")
+#2368168 obs. of 19 variables
+
+axial_18S_dataset <- axial_18S_asv_FinalProduct %>% filter(Domain == "Eukaryota") %>% 
+  filter(value > 0) %>% 
+  filter(!is.na(Class)) %>%  
+  filter(!is.na(Supergroup)) %>%
+  filter(!is.na(Phylum)) %>%
+  mutate(phylum_class = paste(Phylum, Class, sep = "~")) %>%
+  mutate(phylum_class = ifelse(str_detect(phylum_class, "_X$"),
+str_replace(phylum_class, "~.*_X$", "~Unannotated"),phylum_class))
+
+fifth_percentile <- quantile(axial_18S_dataset$value, probs = 0.05, na.rm = TRUE)
+
+# Mutate phylum_class to "Other" if Count is in the bottom 5%
+axial_18S_dataset <- axial_18S_dataset %>%
+  mutate(phylum_class = ifelse(value <= fifth_percentile, "Other", phylum_class))
+
+
+```
+
+Stacked ASV plot - Relative sequence abundance in plume and vent
+
+```{r}
+
+depth_order <- c("euphotic", "oxycline", "30m above", "plume top", "peak plume",
+                 "under plume", "background")
+
+Axial_18S_Plume_Background <- axial_18S_dataset %>%
+  filter(SAMPLE_TYPE != "vent") %>%
+  filter(Location_Name != "Soupy background") %>% 
+  group_by(SAMPLE, phylum_class, Location_Name, DEPTH_CATEGORY) %>%
+  summarise(seq_count = sum(value), .groups = "drop") %>%
+  group_by(SAMPLE) %>%
+  mutate(rel_seq_count = seq_count / sum(seq_count)) %>%
+  group_by(DEPTH_CATEGORY, Location_Name, phylum_class) %>%
+  summarise(avg_rel_seq_count = mean(rel_seq_count), .groups = "drop") %>%
+  group_by(DEPTH_CATEGORY, Location_Name) %>%
+  mutate(rel_abundance_scaled = avg_rel_seq_count / sum(avg_rel_seq_count)) %>%
+  ungroup() %>%
+  mutate(DEPTH_CATEGORY = factor(DEPTH_CATEGORY, levels = depth_order))
+
+ggplot(Axial_18S_Plume_Background, aes(x = DEPTH_CATEGORY, y = rel_abundance_scaled, fill = phylum_class)) +
+  geom_bar(stat = "identity", position = "fill", color = "black", width = 0.9) +
+  facet_grid(. ~Location_Name, scale = "free", space = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, face = "bold", color = "black"),
+        strip.background = element_blank(), 
+        strip.text = element_text(color = "black", face = "bold", angle = 90),
+        axis.title = element_text(color = "black", face = "bold"),
+        axis.text.y = element_text(color = "black", face = "bold"),
+        legend.position = "right",
+        legend.title = element_blank()) +
+  labs(x = "", y = "Relative Sequence Abundance")
+
+```
+
+#Make an upset plot
+
+```{r}
+
+install.packages("ggupset")
+library(ggupset)
+
+# Step 1: Create presence table (ASV × Location)
+asv_long <- axial_18S_dataset %>%
+  group_by(Feature.ID, Location_Name, phylum_class) %>%
+  summarise(present = any(value > 0), .groups = "drop") %>%
+  filter(present)
+
+# Step 2: Collapse to 1 row per ASV, listing locations
+asv_upset_input <- asv_long %>%
+  group_by(Feature.ID, phylum_class) %>%
+  summarise(samples = list(unique(Location_Name)), .groups = "drop") %>% 
+  filter(!is.na(samples))
+
+# Step 3: Plot
+ggplot(asv_upset_input, aes(x = samples)) +
+  geom_bar(aes(fill = phylum_class)) +
+  scale_x_upset(order_by = "freq", n_intersections = 25) +
+  labs(x = "", y = "Number of Shared ASVs") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+#Heat map at class level
+```{r}
+#use axial_18s_dataset
+
+axial_18S_dataset_REL_ABUN <- axial_18S_dataset %>%
+  group_by(SAMPLE_TYPE, Location_Name, phylum_class) %>%  
+  summarise(SEQ_AVG_REP = mean(value)) %>%
+  ungroup() %>%
+  mutate(TOTAL_seqs = sum(SEQ_AVG_REP),
+         REL_ABUN = SEQ_AVG_REP / TOTAL_seqs) %>% distinct() %>% 
+  filter(!is.na(SAMPLE_TYPE))
+
+#Make sure to average replicates
+axial_18S_REL_ABUN <- axial_18S_dataset %>%
+  group_by(SAMPLE_TYPE, phylum_class, Location_Name) %>% 
+  summarise(AVG_VALUE = mean(value), .groups = "drop") %>%  # average replicates per sample type + phylum_class
+  group_by(SAMPLE_TYPE) %>%
+  mutate(SEQ_TOTAL = sum(AVG_VALUE),
+         REL_ABUN = AVG_VALUE / SEQ_TOTAL) %>%
+  ungroup() %>% filter(!is.na(SAMPLE_TYPE))
+  
+
+ggplot(axial_18S_dataset_REL_ABUN, aes(x = SAMPLE_TYPE, y = phylum_class, fill = (REL_ABUN))) +
+geom_tile(stat = "identity", color = "black") +
+facet_grid(SUPERGROUP_ORDER + Phylum ~ SITE +YEAR + SAMPLETYPE, scale = "free", space = "free") +
+theme_linedraw() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+strip.background = element_blank(), strip.text = element_text(color = "black"),
+legend.position = "right",
+strip.text.y = element_text(angle = 0)) +
+scale_fill_gradient(low = "white", high = "red") + labs(x = "", y = "Relative abundance")
+
+ggplot(axial_18S_dataset_REL_ABUN, aes(x = SAMPLE_TYPE, y = phylum_class, fill = REL_ABUN)) +
+  geom_tile(stat = "identity", color = "black") +
+  facet_wrap(~ SAMPLE_TYPE, scales = "free_x") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Phylum_Class", y = "Relative Abundance")
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,171 @@
+---
+title: "Axial_NMDS"
+author: "Alexis Adams"
+date: "2025-08-04"
+output: html_document
+---
+##Making an NMDS plot for compiled Axial Seamount data
+
+NMDS plots are non-metric and are thus ideal to use for data that may not fit a normal distribution. NMDS is an iterative algorithim, meaning it repeats the same steps until it finds the best fit. Since NMDS plots are non-metric, actual distances are not preserved, instead distances are based on similarity only. The closer the points/samples are, the more similar the community. 
+
+NMDS plot is generated using an OTU table where the points are the samples.An NMDS plot requires distance matric as an input. For this plot, the distance matric is Bray-Curtis because it takes into account both presence/absence and abundance. 
+
+For more information on NMDS plots: https://sites.google.com/site/mb3gustame/dissimilarity-based-methods/non-metric-multidimensional-scaling
+
+#Install packages and import data
+Read in ASV/OTU table that has ASVs/OTUs as columns, and samples as rows. 
+
+My current dataframe is a wide ASV table, with the first column being the ASVs and each column being a sample. I need to transpose the data so that the first column is a list of the samples and the following columns are ASVs. 
+
+If there is metadata within the dataframe, remove it so that this data frame only includes ASV abundance columns. The input matrix for the NMDS can only contain numeric data. Make sure all data is numeric and that there are no empty rows. 
+
+Once your data frame is in the proper format, save as a matrix. 
+```{r}
+install.packages("vegan")
+library(vegan)
+library(dplyr)
+library(ggplot2)
+
+ASV <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/deepsea-18s-merged-asv-table-05022025.tsv", header = TRUE, sep = "\t", skip = 1)
+
+axial_asv <- ASV %>% column_to_rownames("X.OTU.ID") %>% t() %>% as.data.frame() %>% 
+rownames_to_column("sample") %>% filter(grepl("Axial", sample, ignore.case = TRUE))
+
+axial_asv_matrix <- axial_asv %>% filter(rowSums(select(., -sample)) >0) %>% select(-sample) %>% mutate_all(as.numeric) %>% as.matrix()
+```
+
+Now we can run the metaMDS command from the vegan package to generate an NMDS plot. The tutorial kept the parameters as default and set "bray" as the distance measure. To get the same results each time the NMDS plot is run include set.seed before metamDS command. 
+
+```{r}
+axial_nmds = metaMDS(axial_asv_matrix, distance = "bray")
+plot(axial_nmds)
+```
+
+Stars represent species and circles represent samples. The plot is very crowded so exporting data from the NMDS scores (x and y coordinates) into a dataframe will allow plotting in ggplot. Import metadata into dataframe. I'm going to start by adding the sample names back from axial_asv so that I can left join with my metadata table. 
+
+```{r}
+axial.nmds.scores = as.data.frame(scores(axial_nmds)$sites)
+
+axial.nmds.scores$sample = axial_asv$sample
+
+##Lost a sample because sample 103 had zero asvs. Find sample and remove. 
+
+check_axial_asvs <- axial_asv %>% mutate(row_sum = rowSums(select(., -sample))) %>% 
+  filter(row_sum != 0)
+
+axial.nmds.scores$sample = check_axial_asvs$sample
+
+#Left join with metadata by sampleID because I want to plot by sample_type
+metadata_input <- read.csv("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/axial_compiledmetadata.csv", header = TRUE)
+
+metadata_input <- metadata_input %>% rename(sample = NEW_FASTQ_NAME)
+
+axial_metadata_nmds <- left_join(axial.nmds.scores, metadata_input, by = "sample")
+
+```
+
+#Refined NMDS Plot of plume and background samples
+
+```{r}
+unique(axial_metadata_nmds$Location_Name)
+
+axial_plume_background <- axial_metadata_nmds %>% 
+  filter(SAMPLE_TYPE != "vent") %>% 
+  filter(Location_Name %in% c("International District", "Background", "ASHES", "Soupy Background"))
+
+
+ggplot(axial_plume_background, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 4, aes(shape = SAMPLE_TYPE, colour = Location_Name)) +
+    theme(axis.text.y = element_text(colour = "black", size = 12, face = "bold"),
+        axis.text.x = element_text(colour = "black", face = "bold", size = 12), 
+        legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+        legend.position = "right", axis.title.y = element_text(face = "bold", size = 14), 
+        axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+        legend.title = element_text(size = 14, colour = "black", face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+        legend.key=element_blank()) + 
+  labs(x = "NMDS1", colour = "Location Name", y = "NMDS2", shape = "Type")
+
+```
+
+#NMDS plot of plume samples at ASHES
+
+```{r}
+axial_ashes <- axial_plume_background %>% filter(Location_Name %in% c("ASHES", "Background"))
+
+ggplot(axial_ashes, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 4, aes(shape = SAMPLE_TYPE, colour = DEPTH_CATEGORY)) +
+    theme(axis.text.y = element_text(colour = "black", size = 12, face = "bold"),
+        axis.text.x = element_text(colour = "black", face = "bold", size = 12), 
+        legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+        legend.position = "right", axis.title.y = element_text(face = "bold", size = 14), 
+        axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+        legend.title = element_text(size = 14, colour = "black", face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+        legend.key=element_blank()) + 
+  labs(x = "NMDS1", colour = "Location Name", y = "NMDS2", shape = "Type")
+
+
+```
+
+```{r}
+axial_intl_dist <- axial_plume_background %>% filter(Location_Name %in% c("International District", "Background"))
+
+ggplot(axial_intl_dist, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 4, aes(shape = SAMPLE_TYPE, colour = DEPTH_CATEGORY)) +
+    theme(axis.text.y = element_text(colour = "black", size = 12, face = "bold"),
+        axis.text.x = element_text(colour = "black", face = "bold", size = 12), 
+        legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+        legend.position = "right", axis.title.y = element_text(face = "bold", size = 14), 
+        axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+        legend.title = element_text(size = 14, colour = "black", face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+        legend.key=element_blank()) + 
+  labs(x = "NMDS1", colour = "Location Name", y = "NMDS2", shape = "Type")
+```
+
+#PERMANOVA test 
+
+Permanova tests if community composition differs among categorical groups by testing statistical differences between categories. In this case, I hope to test the stastical differences between euk communities within the distinct plume categories.
+
+Tutorial followed: https://uw.pressbooks.pub/appliedmultivariatestatistics/chapter/permanova/
+
+Prep community data matrix, where rows are samples and columns are OTU/ASVs. I made this ahead of time and the file is labeled as axial_asv. 
+
+Calculate distance matrix, in this case I'm using Bray Curtis. 
+
+To run a PERMANOVA test you need both 1) an ASV table where rows = samples and columns = ASVs and 2)metadata DF where each row = sample. Before running adonis2(), ensure sample row from each table match exactly in order. 
+```{r}
+#Subset data for just one vent site. (This can not be done once a distance object is created). 
+#As figured out in previous steps (check_axial_asvs) some rows may not have a single ASV present. These rows must be removed or it will interfere with distance metrics.This was done ahead of time with check_axial_asvs.
+#Remove row_sum column
+
+#1 prep ASV table and create distance object
+no_zero_asv_ASHES <- check_axial_asvs %>% select(-row_sum) %>% filter(grepl("ASHES", sample))
+
+#Prep metadata table by filtering for ASHES vent site and ensuring sample rows match. Remember that samples with no asv were removed, so these also need to be removed from the metadata.
+check_axial_asvs <- tibble::column_to_rownames(check_axial_asvs, "sample")
+  
+metadata_ASHES <- metadata_input %>% 
+  filter(Location_Name == "ASHES") %>% filter(sample %in% rownames(check_axial_asvs))
+
+all(rownames(no_zero_asv_ASHES) == metadata_ASHES$sample)
+
+#Remove sample column so that entire table is numeric
+no_zero_asv_ASHES <- tibble::column_to_rownames(no_zero_asv_ASHES, "sample")
+
+bray_curtis_axial <- vegdist(no_zero_asv_ASHES, method = "bray")
+
+#Run PERMANOVA using adonis2() in vegan 
+adonis_results_ASHES <- adonis2(bray_curtis_axial ~ DEPTH_CATEGORY, data = metadata_ASHES, permutations = 9999)
+
+```
+
+
+
+
+
+
