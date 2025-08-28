@@ -1,0 +1,33 @@
+#deepsea_18S_merged contains data from Gorda Ridge, MidCayman Rise, and Axial. Parse out data into individual dataframes on HPRC cluster and save Axial dataset to local computer. 
+
+# Change working directory to locate file
+setwd("/scratch/group/hu-lab/deepsea-18S-merged-outputs")
+
+list.files("/scratch/group/hu-lab/deepsea-18S-merged-outputs/merged-taxonomy-0.9_0.8_PR2-5.0.0/taxonomy-merged-05022025")
+
+
+#Import file
+deepsea_18S_merged_asv <- read.delim("/scratch/group/hu-lab/deepsea-18S-merged-outputs/deepsea-18s-merged-asv-table-05022025.tsv", header = TRUE, sep = "\t", skip=1)
+deepsea_18S_PR2_tax <- read.delim("/scratch/group/hu-lab/deepsea-18S-merged-outputs/merged-taxonomy-0.9_0.8_PR2-5.0.0/taxonomy-merged-05022025/taxonomy-05022025.tsv", sep = "\t")
+
+
+deepsea_18S_asv_wtax_NO_FILTER <- deepsea_18S_merged_asv %>% 
+  select(Feature.ID = 'X.OTU.ID', everything()) %>% 
+  pivot_longer(cols = !Feature.ID, 
+               names_to = "SAMPLE", values_to = "value")%>% 
+  left_join(deepsea_18S_PR2_tax, by = c("Feature.ID" = "Feature.ID")) %>% 
+  separate(Taxon, c("Domain", "Supergroup",
+                    "Phylum", "Class", "Order",
+                    "Family", "Genus", "Species"), sep = ";", remove = FALSE) 
+
+axial_18S_asv_wtax_NOFILTER <- subset(deepsea_18S_asv_wtax_NO_FILTER, grepl("AXIAL", SAMPLE, ignore.case = TRUE)) %>% 
+  select(-Taxon) 
+#71341 obs of 12 variables
+
+
+
+#Save files to cluster
+write.table(axial_18S_asv_wtax_NOFILTER, 
+            "/scratch/user/alexis98adams/deepsea-18S-datasets/axial_18S_asv_wtax_NOFILTER.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+
