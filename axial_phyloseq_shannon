@@ -1,0 +1,110 @@
+#Calculate shannon diversity index values using phyloseq and plot using ggplot2. 
+
+library("phyloseq")
+library("dplyr")
+library("tidyverse")
+library("ggplot2")
+
+# 1. Three tables are needed: OTU (or ASV), taxonomy and samples
+clean_ASV <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/clean_ASV.tsv", header = TRUE, sep = "\t")
+tax <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/taxonomy.tsv", header = TRUE, sep = "\t")
+metadata_input <- read_csv("R/Axial2023/datainput/axial_compiledmetadata_revised_samplestokeep.csv")
+
+#Phyloseq objects need to have row.names. Define row names from otu column.
+#Then transform into matrices. Metadata can be left as DF. 
+asv_mat <- clean_ASV %>%  tibble::column_to_rownames("FeatureID") %>%  as.matrix()
+tax_mat <- tax %>% tibble::column_to_rownames("Feature.ID") %>% as.matrix()
+
+samples_df <- metadata_input %>% tibble::column_to_rownames("NEW_FASTQ_NAME")
+
+#Transform into phyloseq objects
+ASV_phy = otu_table(asv_mat, taxa_are_rows = TRUE)
+tax_phy = tax_table(tax_mat)
+samples = sample_data(samples_df)
+
+#Final axial phyloseq object
+Axial_phy <- phyloseq(ASV_phy, tax_phy, samples)
+
+#Alpha Diversity
+axial_alpha_div <- estimate_richness(Axial_phy, measures = c("Shannon", "Chao1")) %>% 
+  rownames_to_column(var = "SAMPLE")
+
+##I have my phyloseq object, so I can go back to Axial_phy anytime I want. 
+#For now, I can mutate the shannon diversity columns onto my big axial DF so I can use DPLYR 
+# Calculate Shannon values per sample THEN add sample metadata
+
+axial_alpha_div <- estimate_richness(Axial_phy, measures = c("Shannon", "Chao1")) %>% 
+  rownames_to_column(var = "SAMPLE") 
+
+# Add metadata directly from phyloseq object
+axial_alpha_div_wMetadata <- axial_alpha_div %>% 
+  left_join(as(sample_data(Axial_phy), "data.frame") %>% 
+              rownames_to_column(var = "SAMPLE"),
+            by = "SAMPLE") %>% 
+  filter(SAMPLE_TYPE != "control") %>% 
+  mutate(DEPTH_CATEGORY = ifelse(DEPTH_CATEGORY %in% c("diffuse", "above vent"),"vent", DEPTH_CATEGORY)) %>% 
+  filter(Location_Name != "Soupy background")
+
+axial_alphadiv_organizedvents <- axial_alpha_div_wMetadata %>% filter(!is.na(Location_Name)) %>% 
+  mutate(assoc_vent = case_when(
+    (Location_Name == "ASHES") ~ "ASHES Plume",
+    (Location_Name == "International District") ~ "International District Plume",
+    (Location_Name == "Diva") ~ "International District Vent",
+    (Location_Name == "Gollum") ~ "ASHES Vent",
+    (Location_Name == "Marker 33") ~ "International District Vent",
+    (Location_Name == "Marker 113") ~ "International District Vent",
+    (Location_Name == "Anemone") ~ "ASHES Vent",
+    (Location_Name == "Background") ~ "Background",
+    (Location_Name == "Bag City") ~ "International District Vent",
+    (Location_Name == "Vixen") ~ "International District Vent")) %>% 
+  filter(!is.na(assoc_vent)) %>%
+  mutate(
+    DEPTH_CATEGORY = factor(
+      recode(DEPTH_CATEGORY,
+             "under plume" = "Under Plume",
+             "peak plume" = "Peak Plume",
+             "plume top" = "Plume Top",
+             "30m above" = "30m Above",
+             "euphotic" = "Euphotic",
+             "background" = "Background",
+             "vent" = "Vent"),
+      levels = c("Under Plume", "Peak Plume", "Plume Top", "30m Above", "Euphotic", "Background", "Vent"))) %>% 
+  filter(!is.na(DEPTH_CATEGORY))
+
+unique(axial_alphadiv_organizedvents$DEPTH_CATEGORY)
+
+##Plot shannon diversity by assoc_vent
+
+#install.packages("ggrepel") #Package for ggplot2 that makes it easier to add labels to plots without them overlapping
+#library(ggrepel) #Use this to check data points on plot
+
+ggplot(axial_alphadiv_organizedvents, 
+       aes(x = DEPTH_CATEGORY, y = Shannon, fill = assoc_vent, shape = assoc_vent)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.9, color = "black") +
+  scale_fill_manual(values = c(
+    "ASHES Plume" = "firebrick2",
+    "ASHES Vent" = "firebrick2",
+    "International District Plume" = "darkcyan",
+    "International District Vent" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  scale_shape_manual(values = c(
+    "ASHES Plume" = 21,
+    "ASHES Vent" = 22,
+    "International District Plume" = 21,
+    "International District Vent" = 22,
+    "Background" = 24)) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Shannon Diversity Across Plume Profiles and Vents at Axial Seamount",
+       x = "Depth Category",
+       y = "Shannon Diversity Index",
+       fill = "Associated Origin Vents",
+       shape = "Associated Origin Vents") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_text_repel(
+    data = subset(axial_alphadiv_organizedvents, DEPTH_CATEGORY == "Vent"),
+    aes(label = SAMPLE),
+    size = 3,
+    max.overlaps = 20) #Use this to display just vent samplenames
+
+
