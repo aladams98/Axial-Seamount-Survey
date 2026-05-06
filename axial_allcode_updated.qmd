@@ -1,0 +1,1518 @@
+---
+title: "axial_allcode_updated"
+format: html
+editor: visual
+---
+
+## Characterizing Protistan Community Composition Within Hydrothermal Plumes at Axial Seamount
+
+#1. Setup environment
+
+```{r}
+#library(readr)
+#library(tidyverse)
+#library(phyloseq)
+#library(readxl)
+
+#Import data
+all_metadata_jan2026 <- read_csv("~/R/Axial2023/datainput/all_metadata_jan2026_v2.csv")
+axial_decontam_DF <- read_excel("~/R/Axial2023/datainput/axial_decontam_DF.xlsx")
+ASV <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/clean_ASV.tsv",
+                  header = TRUE, sep = "\t")
+tax <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/taxonomy.tsv", header = TRUE, sep = "\t")
+
+axial_samplestokeep <- read_csv("~/R/Axial2023/datainput/axial_samplestokeep.csv")
+
+axial_euk_cell_counts <- read_csv("~/R/Axial2023/datainput/axial_euk_cell_counts.csv")
+
+#Make metadata sheet and fix naming
+tax <- tax %>% rename(FeatureID = Feature.ID)
+
+all_metadata_jan2026 <- all_metadata_jan2026 %>% 
+  rename(Sample = X)
+
+axial_metadata <- all_metadata_jan2026 %>% filter(grepl("axial", Sample,ignore.case = TRUE)) %>% filter(Sample %in% axial_samplestokeep$Sample) %>% 
+  mutate(depth_category = case_when(
+    (depth_category == "background") ~ "Background",
+    (depth_category == "30m above") ~ "Above Plume",
+    (depth_category == "under plume") ~ "Under Plume",
+    (depth_category == "peak plume") ~ "Mid Plume",
+    (depth_category == "plume top") ~ "Plume Top",
+    (depth_category == "diffuse") ~ "Diffuse", 
+    (depth_category == "euphotic") ~ "Euphotic",
+    (depth_category == "oxycline") ~ "Oxycline",
+    TRUE ~ depth_category))
+
+axial_metadata <- axial_metadata %>% 
+  filter(!depth_category %in% c("Oxycline", "Euphotic"))
+
+#Keep ASVs that only have 50 or more sequences and are found in two or more samples
+asv_keep <- ASV %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  group_by(FeatureID) %>%
+  summarise(
+    total_reads = sum(SEQUENCE_COUNT),
+    prevalence = sum(SEQUENCE_COUNT > 0),
+    .groups = "drop") %>%
+  filter(total_reads >= 50, prevalence >= 2)
+
+samplestokeep_ASV <- ASV %>% 
+    filter(FeatureID %in% asv_keep$FeatureID) %>% 
+    pivot_longer(
+      cols = -c(FeatureID),
+      names_to = "Sample",
+      values_to = "SEQUENCE_COUNT") %>%
+    filter(Sample %in% axial_metadata$Sample) 
+
+table_asv <-  samplestokeep_ASV %>% 
+  left_join(axial_metadata, by = "Sample") %>% 
+  left_join(tax, by = "FeatureID") %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";")
+  
+```
+
+#2. Fluid Chemistry Heatmap
+
+```{r}
+FluidChemistry <- read_excel("~/R/Axial2023/datainput/2023Axial_FluidChemistry_Edited.xlsx")
+
+FluidChemistry <- FluidChemistry[-1, ] %>% rename(Temperature = `Max T`)
+
+###
+env_var <- c("Temperature", "pH", "Cl", "SO4", "Na", "K", "Mg", "Ca")
+
+##Vent heatmap DF
+vent_site <- c("Hell", "Inferno", "Virgin", "Castle", "El Guapo", "HighDiva", "Anemone", 
+               "Gollum", "LowDiva", "ASHES - 30m Above", "ASHES - Top of Plume", "ASHES - Peak Plume",
+               "ASHES - Below Plume","Intl.Dist - 30m Above", "Intl.Dist - Top of Plume",
+               "Intl.Dist - Peak Plume", "Intl.Dist - Below Plume", "Background")
+
+vent_fluidchemistry <- FluidChemistry %>% 
+  filter(Site %in% vent_site) %>% mutate(Site = factor(Site, levels = vent_site)) %>% 
+  mutate(across(all_of(env_var), as.numeric))
+
+`18S` <- ggplot(vent_fluidchemistry, aes(x = Site, y = "18S", fill = `18S`)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradient(
+    low = "grey85",
+    high = "darkslateblue") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text = element_text(color = "black"),
+        panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "")
+
+ggsave("~/`18S`.svg", plot = `18S`, width = 4, height = 2, units = "in")
+
+temp <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Temperature", fill = Temperature)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85",
+    values = scales::rescale(c(2, 25, 50, 330)),
+    limits = c(2, 330),
+    oob = scales::squish,
+    breaks = c(2, 50, 200, 300)) +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "Temp", fill = "T (°C)")
+
+ggsave("~/temp.svg", plot = temp, width = 4, height = 1, units = "in")
+
+ph <- ggplot(vent_fluidchemistry, aes(x = Site, y = "pH", fill = pH)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "pH")
+
+ggsave("~/ph.svg", plot = ph, width = 4, height = 1, units = "in")
+
+doc <- ggplot(vent_fluidchemistry, aes(x = Site, y = "DOC", fill = DOC)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "DOC (µM)")
+
+ggsave("~/doc.svg", plot = doc, width = 4, height = 1, units = "in")
+
+poc <- ggplot(vent_fluidchemistry, aes(x = Site, y = "POC", fill = POC)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "POC (µM)")
+
+ggsave("~/poc.svg", plot = poc, width = 4, height = 1, units = "in")
+
+#Cl
+cl_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Cl", fill = Cl)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "Cl (mM/Kg)")
+
+ggsave("~/cl_plot.svg", plot = cl_plot, width = 4, height = 1, units = "in")
+
+#So4
+so4_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "SO4", fill = SO4)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "SO4 (mM/Kg)")
+
+ggsave("~/so4_plot.svg", plot = so4_plot, width = 4, height = 1, units = "in")
+
+#Na
+na_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Na", fill = Na)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "Na (mM/Kg)")
+
+ggsave("~/na_plot.svg", plot = na_plot, width = 4, height = 1, units = "in")
+
+#K
+k_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "K", fill = K)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "K (mM/Kg)")
+
+ggsave("~/k_plot.svg", plot = k_plot, width = 4, height = 1, units = "in")
+
+#Mg
+mg_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Mg", fill = Mg)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "Mg (mM/Kg)")
+
+ggsave("~/mg_plot.svg", plot = mg_plot, width = 4, height = 1, units = "in")
+
+ca_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Ca", fill = Ca)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "Ca (mM/Kg)")
+
+ggsave("~/ca_plot.svg", plot = ca_plot, width = 4, height = 1, units = "in")
+
+ca_plot <- ggplot(vent_fluidchemistry, aes(x = Site, y = "Ca", fill = Ca)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradientn(
+    colors = c("darkseagreen1", "darkseagreen", "gold", "darkslateblue"),
+    na.value = "grey85") +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()) +
+  labs(x = "", y = "", fill = "Ca (mM/Kg)")
+
+ggsave("~/ca_plot.svg", plot = ca_plot, width = 4, height = 1, units = "in")
+
+#Prok
+cell_count_order <- c("Anemone", "Gollum", "Diva", "ASHES-30m Above", "ASHES-Plume Top", "ASHES-Peak Plume",
+                     "ASHES-Under Plume","International District-30m Above", "International District-Plume Top",
+                     "International District-Peak Plume", "International District-Under Plume", "Background")
+
+cell_counts_prok <- cell_counts_prok %>% 
+  mutate(site = paste(location_name, depth_category, sep = "-")) %>% 
+  mutate(site = case_when(
+    str_detect(site, "Diva") ~ "Diva",
+    str_detect(site, "Gollum") ~ "Gollum",
+    str_detect(site, "Anemone") ~ "Anemone",
+    str_detect(site, "Background") ~ "Background",
+    TRUE ~ site)) %>% 
+  mutate(site = factor(site, levels = cell_count_order))
+
+prok_heatmap <- ggplot(cell_counts_prok, aes(x = site, y = "prok" , fill = `prok`)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradient(
+    low = "grey85",
+    high = "darkslateblue",
+    labels = scales::label_scientific()) +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(axis.text.x = element_blank(),
+        axis.text = element_blank(),
+        panel.grid = element_blank()) +
+  labs(x = "", y = "Prok. Count", fill = "Cells/ml")
+
+ggsave("~/prok_heatmap.svg", plot = prok_heatmap, width = 4, height = 2, units = "in")
+
+
+#euk cell count
+euk_cell_counts <- axial_euk_cell_counts %>% filter(EXP.ID != "EuphoticSubeuphotic") %>%
+  filter(EXP.ID != "Oxycline") %>%
+  filter(Vent_field %in% c("International District", "ASHES", "Background")) %>% 
+  mutate(EXP.ID = case_when(
+    EXP.ID == "30m above plume" ~ "30m Above",
+    EXP.ID == "Top of plume" ~ "Plume Top", 
+    EXP.ID == "Below plume" ~ "Under Plume",
+    EXP.ID == "Peak plume" ~ "Peak Plume",
+   TRUE ~ EXP.ID)) %>% 
+  mutate(site = paste(Vent_field, EXP.ID, sep = "-")) %>% 
+  mutate(site = case_when(
+    str_detect(site, "Diva") ~ "Diva",
+    str_detect(site, "Gollum") ~ "Gollum",
+    str_detect(site, "Anemone") ~ "Anemone",
+    str_detect(site, "Background") ~ "Background",
+    TRUE ~ site)) %>% 
+  mutate(site = factor(site, levels = cell_count_order))
+
+euk_heatmap <- ggplot(euk_cell_counts, aes(x = site, y = "CELLS_PER_ML_total" , fill = `CELLS_PER_ML_total`)) +
+  geom_tile(color = "grey90") +
+  scale_fill_gradient(
+    low = "grey85",
+    high = "darkslateblue",
+    labels = scales::label_scientific()) +
+  theme_minimal() +
+  guides(
+    fill = guide_colorbar(
+      barheight = unit(0.5, "in"))) +
+  theme(axis.text.x = element_blank(),
+        axis.text = element_blank(),
+        panel.grid = element_blank()) +
+  labs(x = "", y = "Euk. Count", fill = "Cells/ml")
+
+ggsave("~/euk_heatmap.svg", plot = euk_heatmap, width = 4, height = 2, units = "in")
+
+```
+
+#2.2 TOC, DOC, and POC
+
+```{r}
+SiteType_Order <- c("Background", "Diffuse", "Under Plume", "Peak Plume", "Plume Top", "30m Above")
+
+axial_OC <- axial_metadata %>% select(DOC, POC, TOC, location_name, depth_category) %>% 
+  filter(TOC > 0) %>% mutate(vent_field = case_when(
+    (location_name == "Diva") ~ "International District", 
+    TRUE ~ location_name)) %>% 
+  mutate(depth_category = factor(depth_category, levels = SiteType_Order)) %>% 
+  distinct(DOC, .keep_all = TRUE) #Biological replicates contain same numbers, removing duplicates
+
+unique(axial_OC$vent_field)
+
+ggplot(axial_OC, aes(x = DOC, y = depth_category, color = vent_field, shape = depth_category)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17, 
+    "30m Above" = 16,
+    "Plume Top" = 16,
+    "Peak Plume" = 16,
+    "Under Plume" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  labs(x = "DOC (µM)", y = "")
+
+ggsave("~/DOC_plot.png", plot = DOC_plot, width = 4, height = 4, dpi = 600, units = "in")
+
+TOC_plot <- ggplot(axial_OC, aes(x = TOC, y = depth_category, color = vent_field, shape = depth_category)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17, 
+    "30m Above" = 16,
+    "Plume Top" = 16,
+    "Peak Plume" = 16,
+    "Under Plume" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  labs(x = "TOC (µM)", y = "") 
+
+ggsave("~/TOC_plot.png", plot = TOC_plot, width = 4, height = 4, dpi = 600, units = "in")
+
+POC_plot <- ggplot(axial_OC, aes(x = POC, y = depth_category, color = vent_field, shape = depth_category)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17, 
+    "30m Above" = 16,
+    "Plume Top" = 16,
+    "Peak Plume" = 16,
+    "Under Plume" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod",
+    "Marker 113" = "tomato4",
+    "Marker 33" = "indianred",
+    "Bag City" = "coral2")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  labs(x = "POC (µM)", y = "")
+
+ggsave("~/POC_plot.png", plot = POC_plot, width = 4, height = 4, dpi = 600, units = "in")
+```
+
+#3. Alpha Diversity
+
+```{r}
+#Identify replicates 
+unique(axial_metadata$depth_category)
+  
+alpha_div_metadata <- axial_metadata %>% 
+  mutate(DepthCat_Location = paste(dive_ctd, filter, depth_category, location_name, depth, sep = "-"))
+
+#DepthCat_Location will have identical names so I need to identify replicates. Just going to do this manually for simplicity. 
+write.csv(alpha_div_metadata, "alpha_div_metadata.csv", row.names = FALSE)
+  
+  
+#Rep's assigned. Criteria for reps: same dive, depth_category, location and depth
+alpha_metadata_wReps <- read_csv("~/R/Axial2023/alpha_div_metadata.csv")
+
+alpha_metadata_wReps <- alpha_metadata_wReps %>% mutate(DepthCat_Location = paste(DepthCat_Location, REP, sep = "-")) 
+
+#Add DeptCat_Location from metadata to ASV table
+alpha_ASV <- ASV %>% 
+  filter(FeatureID %in% asv_keep$FeatureID) %>% 
+  pivot_longer(cols = -FeatureID,
+               names_to = "Sample", 
+               values_to = "SEQUENCE_COUNT") %>% 
+  filter(Sample %in% alpha_metadata_wReps$Sample) %>% 
+  left_join(alpha_metadata_wReps %>% select(Sample, DepthCat_Location), by = "Sample")
+
+alpha_metadata_wReps <- alpha_metadata_wReps %>% column_to_rownames("DepthCat_Location")
+
+ASV_wide <- alpha_ASV %>%
+  select(FeatureID, DepthCat_Location, SEQUENCE_COUNT) %>%
+  pivot_wider(
+    names_from = DepthCat_Location,
+    values_from = SEQUENCE_COUNT,
+    values_fill = 0)
+  
+#Phyloseq objects need to have row.names. Define row names from ASV column.
+#Then transform into matrices. Metadata can be left as DF. 
+asv_mat <- ASV_wide %>%  tibble::column_to_rownames("FeatureID") %>% as.matrix()
+tax_mat <- tax %>% tibble::column_to_rownames("FeatureID") %>% as.matrix()
+
+#Transform into phyloseq objects
+ASV_phy = otu_table(asv_mat, taxa_are_rows = TRUE)
+tax_phy = tax_table(tax_mat)
+samples = sample_data(alpha_metadata_wReps)
+
+#Final axial phyloseq object
+Axial_phy <- phyloseq(ASV_phy, tax_phy, samples)
+
+#Calculate alpha diversity
+axial_alpha_div <- estimate_richness(Axial_phy, measures = c("Shannon", "Simpson")) %>% 
+  rownames_to_column(var = "SAMPLE") %>% 
+  separate(SAMPLE,
+    into = c("DIVE","FILTER","DEPTH_CATEGORY", "Location_Name", "DEPTH", "REP"),  
+    sep = "-", 
+    remove = TRUE)
+
+axial_alpha_div <- axial_alpha_div %>% 
+    mutate(REP_ID = paste(DIVE,FILTER, Location_Name, DEPTH_CATEGORY, DEPTH, sep = "-"))  %>% 
+  group_by(REP_ID) %>% 
+  summarise(
+    Shannon_mean = mean(Shannon, na.rm = TRUE),
+    Simpson_mean = mean(Simpson, na.rm = TRUE),
+    n_reps = n(),
+    .groups = "drop")
+
+SiteType_Order <- c("Diffuse", "Under Plume", "Mid Plume", "Plume Top", "Above Plume", "Background")
+
+axial_alpha_div <- axial_alpha_div %>% 
+  separate(REP_ID,
+    into = c("DIVE","FILTER", "Location_Name","DEPTH_CATEGORY", "DEPTH"),  
+    sep = "-", 
+    remove = TRUE)
+
+axial_alpha_div <- axial_alpha_div %>% 
+  mutate(DEPTH_CATEGORY = factor(DEPTH_CATEGORY, levels = SiteType_Order)) %>% 
+  mutate(Site = case_when(
+      Location_Name %in% c("Anemone", "Gollum") ~ "ASHES Vent",
+      Location_Name == "Diva" ~ "International District Vent",
+      TRUE ~ Location_Name)) %>% 
+  mutate(Site = case_when(
+    Site == "ASHES" ~ "ASHES Plume", 
+    Site == "International District" ~ "International District Plume",
+    TRUE ~ Site)) %>% 
+  mutate(vent_field = case_when(
+    str_detect(Site, "ASHES") ~ "ASHES",
+    str_detect(Site, "International") ~ "International District",
+    str_detect(Site, "Background") ~ "Background"))
+
+unique(axial_alpha_div$DEPTH_CATEGORY)
+
+#shannon plot
+shannon_plot_updated <- ggplot(axial_alpha_div, aes(x = Shannon_mean, y = DEPTH_CATEGORY, color = vent_field,
+    shape = Site)) +
+  geom_point(aes(color = vent_field, shape = DEPTH_CATEGORY), size = 3) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  scale_shape_manual(name = "Depth Category", values = c(
+    "Above Plume" = 23,
+    "Plume Top" = 25,
+    "Mid-Plume" = 21,
+    "Under Plume" = 4,
+    "Diffuse" = 24,
+    "Background" = 22)) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(fill = guide_legend(reverse = TRUE, ncol = 1)) +
+  labs(x = "Shannon Diversity", y = "")
+
+ggsave("~/shannon_plot_updated.png", plot = shannon_plot_updated, width = 6, height = 4, dpi = 600, units = "in")
+
+#Simpson plot
+simpson_plot_updated <- ggplot(axial_alpha_div, aes(x = Simpson_mean, y = DEPTH_CATEGORY, color = Site, shape = Site)) +
+geom_point(aes(color = vent_field, shape = DEPTH_CATEGORY), size = 3) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  scale_shape_manual(name = "Depth Category", values = c(
+    "Above Plume" = 23,
+    "Plume Top" = 25,
+    "Mid-Plume" = 21,
+    "Under Plume" = 4,
+    "Diffuse" = 24,
+    "Background" = 22)) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(fill = guide_legend(reverse = TRUE, ncol = 1)) +
+  labs(x = "Simpson Diversity", y = "")
+
+ggsave("~/simpson_plot_updated.png", plot = simpson_plot_updated, width = 6, height = 4, dpi = 600, units = "in")
+```
+
+#4a. Prokaryotic Cell Abundance plot
+
+```{r}
+cell_counts_prok <- axial_metadata %>% select(location_name, depth_category, prok) %>% 
+  mutate(site = case_when(
+  location_name == "Diva" ~ "International District", 
+  location_name == "Anemone" ~ "ASHES",
+  location_name == "Gollum" ~ "ASHES", 
+  TRUE ~ location_name)) %>% mutate(depth_category = factor(depth_category, levels = SiteType_Order)) %>% filter()
+
+prok_count_plot <- ggplot(cell_counts_prok, aes(x = prok, y = depth_category, color = site, shape = depth_category)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17, 
+    "30m Above" = 16,
+    "Plume Top" = 16,
+    "Peak Plume" = 16,
+    "Under Plume" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  scale_x_continuous(labels = scales::scientific) +
+  theme(legend.title = element_blank()) +
+  labs(x ="Cells/ml (log10)", y = "", title = "Prokaryotic Cell Abundance") 
+
+ggsave("~/prok_count_plot.png", plot = prok_count_plot, width = 6, height = 4, dpi = 600, units = "in") 
+
+```
+
+#4b Eukaryotic Cell Count
+
+```{r}
+axial_euk_cell_counts <- read_csv("~/R/Axial2023/datainput/axial_euk_cell_counts.csv")
+
+Cell_Site_Order <- c("Background", "Above vent", "Diffuse", "Below plume", "Peak plume",
+                     "Top of plume", "30m above plume")
+
+cell_counts <- axial_euk_cell_counts %>% filter(EXP.ID != "EuphoticSubeuphotic") %>%
+  filter(EXP.ID != "Oxycline") %>% 
+  mutate(Sample_type = factor(Sample_type, levels = Cell_Site_Order)) %>% 
+  filter(Vent_field %in% c("ASHES", "International District", "Background"))
+
+unique(cell_counts$Vent_field)
+  
+euk_count_plot <- ggplot(cell_counts, aes(x = CELLS_PER_ML_total, y = Sample_type, color = Vent_field,                             shape = Sample_type)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17,
+    "Above vent" = 17,
+    "30m above plume" = 16,
+    "Top of plume" = 16,
+    "Peak plume" = 16,
+    "Below plume" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  theme(legend.title = element_blank()) +
+  labs(x ="Cells/ml", y = "", title = "Eukaryotic Cell Abundance") 
+
+ggsave("~/euk_count_plot.png", plot = euk_count_plot, width = 6, height = 4, dpi = 600, units = "in") 
+
+
+
+```
+
+#5a. Upset plot
+
+```{r}
+upset_asv <- table_asv %>% 
+#Refine location category for easy presence/absence categories
+  mutate(vent_field = case_when(
+      location_name %in% c("Anemone", "Gollum") ~ "ASHES",
+      location_name == "Diva" ~ "International District",
+      TRUE ~ location_name)) %>% 
+  mutate(depth_category = case_when(
+    depth_category == "Diffuse" ~ location_name,
+    TRUE ~ depth_category)) %>% 
+  mutate(full_location_name = paste(depth_category, vent_field, sep = " ")) %>% 
+  mutate(full_location_name = case_when(
+    full_location_name == "Background Background" ~ "Background",
+    TRUE ~ full_location_name))
+
+unique(upset_asv$full_location_name)
+
+
+alv <- c("Alveolata-Ellobiopsidae", "Alveolata-Perkinsea", "Alveolata-Unknown", "Alveolata-Chrompodellids", "Alveolata-Apicomplexa")
+
+#Curate taxonomy
+upset_asv <- upset_asv %>% 
+  filter(Domain == "Eukaryota") %>% 
+  filter(Phylum != "Opisthokonta") %>% 
+  mutate(Phylum = case_when( #Fix phylum
+    str_detect(Phylum, "_X$") ~ paste("Unknown"),
+    is.na(Phylum) ~ paste("Unknown"),
+    TRUE ~ Phylum)) %>% 
+  mutate(Class = case_when( #Fix class
+   str_detect(Class, "_X$") ~ paste("Unknown"),
+    is.na(Class) ~ paste("Unknown"),
+    TRUE ~ Class)) %>% 
+  mutate(supergroup_phylum = paste(Supergroup, Phylum, sep = "-")) %>% 
+  mutate(phylum_class = paste(Phylum, Class, sep = "-")) %>% 
+  filter(phylum_class != "Streptophyta-Unknown") %>% ##Land plants???
+  mutate(taxa = case_when( #Curate taxonomy
+    Supergroup == "Eukaryota_X" ~ "Unknown Eukaryota",
+    Class == "Cercozoa" ~ "Rhizaria-Cercozoa",
+    Class == "Radiolaria" ~ "Rhizaria-Radiolaria",
+    phylum_class == "Unknown-Unknown" ~ "Unknown Eukaryota",
+    str_detect(phylum_class, "Unknown-Amoebozoa_XX|Tubulinea|Evosea") ~ "Amoebozoa",
+    phylum_class %in% alv ~ "Alveolata-Other",
+    phylum_class == "Stramenopiles-Unknown" ~ "Stramenopiles-Other",
+    str_detect(phylum_class, "Discoba|Metamonada") ~"Excavata",
+    str_detect(phylum_class, "Cryptophyta|Kathablepharida") ~"Cryptista",
+    str_detect(phylum_class, "Chlorophyta|Prasinodermophyta|Picozoa") ~"Archaeplastida",
+    str_detect(phylum_class, "Apusomonada|Breviatea|Amoebozoa") ~"Amorphea",
+    str_detect(phylum_class, "Centroplasthelida|Haptophyta") ~"Haptista",
+    str_detect(phylum_class, "Nibbleridia") ~"Provora-Nibbleridia",
+    str_detect(phylum_class, "Collodictyonidae|Mantamonadidea") ~ "CRuMS",
+    str_detect(phylum_class, "Telonemia") ~ "Telonemia",
+    TRUE ~ phylum_class))
+
+
+
+taxa <- c("Alveolata-Dinoflagellata" = "cornflowerblue","Rhizaria-Radiolaria" = 
+            "coral4","Alveolata-Ciliophora" = "coral", 
+          "Stramenopiles-Gyrista" = "chocolate","Rhizaria-Cercozoa" = "cadetblue","Stramenopiles-Bigyra" = "aquamarine","Archaeplastida" = "firebrick4", 
+          "Discosea-Unknown" = "plum4","Stramenopiles-Other" = "lightsalmon", "Amorphea" = "darkolivegreen3","Haptista" = "gold","Amoebozoa" = "lightgoldenrod",
+          "Unknown Eukaryota" = "mistyrose","Telonemia" = "rosybrown","Alveolata-Other" = "peachpuff4","Cryptista" = "coral3","CRuMS" = "darkcyan",
+          "Excavata" = "orchid","Provora-Nibbleridia" = "powderblue")
+
+lessTax_upset_asv <- upset_asv  %>% 
+  mutate(full_location_name = factor(full_location_name, levels = location_order)) %>% 
+  filter(!is.na(full_location_name))
+
+unique(alpha_metadata_wReps$DepthCat_Location)
+
+# Step 1: Create presence table (ASV × Location)
+lessTax_asv_long <- upset_asv %>%
+  group_by(FeatureID, full_location_name, taxa) %>%
+  summarise(present = any(SEQUENCE_COUNT > 0), .groups = "drop") %>%
+  filter(present)
+
+# Step 2: Collapse to 1 row per ASV, listing locations
+lessTax_asv_upset_input <- lessTax_asv_long %>%
+  group_by(FeatureID, taxa) %>%
+  summarise(locations = list(unique(as.character(full_location_name))), .groups = "drop") 
+
+library(ggupset)
+
+# Step 3: Plot
+upset_updated <- ggplot(lessTax_asv_upset_input, aes(x = locations)) +
+  geom_bar(aes(fill = taxa)) +
+  scale_fill_manual(values = taxa) +
+  scale_x_upset(order_by = "freq", n_intersections = 25) +
+  labs(x = "", y = "Number of Shared ASVs") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "", y = "Shared ASVs", fill = "Taxonomy") +
+  theme_linedraw() +
+  theme(axis.text.y = element_text(color="black", size=14, face = "bold"),
+        axis.text.x = element_text(color="black", size=14, face = "bold"),
+        axis.title = element_text(color="black", size=14, face = "bold"),
+        legend.text = element_text(color = "black", size = 12),
+        legend.title = element_text(color="black", size=14, face = "bold"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        legend.position = "right")
+
+
+ggsave("~/upset_updated.png", plot = upset_updated, width = 10, height = 8, dpi = 600, units = "in")
+
+```
+
+#5b. Venn diagrams
+
+```{r}
+#Venn
+venn_asv <- upset_asv %>% 
+  mutate(SAMPLE_ID = paste(vent_field, sample_type)) %>% 
+  mutate(SAMPLE_ID = case_when(
+    SAMPLE_ID == "Background background" ~ "Background",
+    TRUE ~ SAMPLE_ID))
+
+venn <- venn_asv %>% 
+  select(FeatureID, SEQUENCE_COUNT, SAMPLE_ID) %>% 
+  group_by(SAMPLE_ID) %>% 
+  summarise(unique_ASV = list(unique(FeatureID))) %>% 
+  deframe()
+
+#Get ASVs for each site
+ASHESplume_ASVs <- venn_asv %>% 
+  filter(SAMPLE_ID == "ASHES plume", SEQUENCE_COUNT > 0) %>% 
+  pull(FeatureID) %>% 
+  unique()
+
+ASHESvent_ASVs <- venn_asv %>% 
+  filter(SAMPLE_ID == "ASHES vent", SEQUENCE_COUNT > 0) %>% 
+  pull(FeatureID) %>% unique()
+
+intldistPlume_ASVs <- venn_asv %>% 
+  filter(SAMPLE_ID == "International District plume", SEQUENCE_COUNT > 0) %>% 
+  pull(FeatureID) %>% unique()
+
+intldistVent_ASVs <- venn_asv %>% 
+  filter(SAMPLE_ID == "International District vent", SEQUENCE_COUNT > 0) %>% 
+  pull(FeatureID) %>% unique()
+
+background_ASVs <- venn_asv %>% 
+  filter(SAMPLE_ID == "Background", SEQUENCE_COUNT > 0) %>% 
+  pull(FeatureID) %>% unique()
+
+shared_intldist_VentPlume <- intersect(intldistVent_ASVs, intldistPlume_ASVs)
+length(shared_intldist_VentPlume)
+
+shared_ASHES_VentPlume <- intersect(ASHESvent_ASVs, ASHESplume_ASVs)
+length(shared_ASHES_VentPlume)
+
+shared_ASHES_PlumeBackground <- intersect(ASHESplume_ASVs, background_ASVs)
+length(shared_ASHES_PlumeBackground)
+
+shared_intldist_PlumeBackground <- intersect(intldistPlume_ASVs, background_ASVs)
+length(shared_intldist_PlumeBackground)
+
+install.packages("ggvenn")
+library(ggvenn)
+
+ASHESvenn <- ggvenn(
+  list(
+    Plume = ASHESplume_ASVs, 
+    Vent = ASHESvent_ASVs,
+    Background = background_ASVs), 
+  fill_color = c("orangered3", "indianred", "goldenrod")) +
+  labs(title = "ASHES")
+
+ggsave("~/ASHESvenn.png", plot = ASHESvenn, width = 10, height = 6, dpi = 600, units = "in")
+
+IntlDist_Venn <- ggvenn(
+  list(
+    Plume = intldistPlume_ASVs,
+    Vent = intldistVent_ASVs,
+    Background = background_ASVs), 
+  fill_color = c("cyan", "lightseagreen", "goldenrod")) +
+  labs(title = "International District")
+
+ggsave("~/IntlDist_Venn.png", plot = IntlDist_Venn, width = 10, height = 6, dpi = 600, units = "in")
+
+install.packages("patchwork")
+library(patchwork)
+
+venn_patch <- IntlDist_Venn/ASHESvenn
+venn_patch
+
+ggsave("~/venn_patch.svg", plot = venn_patch, width = 20, height = 10, units = "in")
+
+#Plume venn diagrams
+```
+
+#6. Stacked Bar Plot summarizing relative sequence abundance
+
+```{r}
+ASHES_order <- c("Gollum ", "Anemone ", "Under Plume ", "Mid Plume ", "Plume Top ", "Above Plume ", "Background")
+
+stackedbar_axial <- upset_asv %>% #Including depth in full_location_name will ensure there are three background samples. In this case, we don't want that. 
+  group_by(full_location_name, taxa) %>% #Collapse replicates
+  summarise(seq_sum = sum(SEQUENCE_COUNT, na.rm = TRUE), .groups = "drop") %>% 
+  group_by(full_location_name) %>% #Get total sequences count per sample
+  mutate(sample_seq_total = sum(seq_sum),
+         taxa_relAbun = seq_sum / sample_seq_total) %>% 
+  ungroup() %>% 
+  mutate(vent_field = case_when(
+   str_detect(full_location_name, "ASHES") ~ "ASHES",
+    str_detect(full_location_name, "International") ~ "International District",
+    str_detect(full_location_name, "Background") ~ "Background")) %>% 
+  mutate(full_location_name = str_remove_all(
+    full_location_name,
+    "ASHES|International District")) 
+
+ASHES_stacked <- stackedbar_axial %>% 
+  filter(vent_field %in% c("ASHES", "Background")) %>% 
+  mutate(full_location_name = factor(full_location_name, levels = ASHES_order))
+
+
+IntlDist_order <- c("Under Plume ", "Mid Plume ", "Plume Top ", "Above Plume ","Diva ")
+
+IntlDist_stacked <- stackedbar_axial %>% 
+  filter(vent_field == "International District") %>% 
+  mutate(full_location_name = factor(full_location_name, levels = IntlDist_order))
+
+
+#ASHES and background plot
+ASHES_stacked <- ggplot(ASHES_stacked, aes(y = full_location_name, x = taxa_relAbun, fill = taxa)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = taxa) +
+  theme_minimal(base_size = 12) +
+  theme(
+    # Text
+    axis.text.x = element_text(face = "bold", color = "black", size = 12),
+    axis.text.y = element_text(face = "bold", color = "black", size = 11),
+    axis.title = element_text(color = "black", face = "bold"),
+    strip.text = element_text(color = "black", face = "bold", size = 12),
+    legend.text = element_text(color = "black", size = 14),
+    
+    # Backgrounds
+     plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray", color = NA),
+    
+    # Gridlines
+    panel.grid = element_blank(),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_blank()) +
+  labs(
+    title = "",
+    x = "",
+    y = "") +
+  guides(fill = guide_legend(title = NULL))
+
+#International District
+IntlDist_stacked <- ggplot(IntlDist_stacked, aes(y = full_location_name, x = taxa_relAbun, fill = taxa)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = taxa) +
+  theme_minimal(base_size = 12) +
+  theme(
+    # Text
+    axis.text.x = element_text(face = "bold", color = "black", size = 12),
+    axis.text.y = element_text(face = "bold", color = "black", size = 11),
+    axis.title = element_text(color = "black", face = "bold"),
+    strip.text = element_text(color = "black", face = "bold", size = 12),
+    legend.text = element_text(color = "black", size = 14),
+    
+    # Backgrounds
+     plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray", color = NA),
+    
+    # Gridlines
+    panel.grid = element_blank(),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_blank()) +
+  labs(
+    title = "",
+    x = "",
+    y = "") +
+  guides(fill = guide_legend(title = NULL))
+
+ggsave("~/IntlDist_stacked.png", plot = IntlDist_stacked, width = 10, height = 6, dpi = 600, units = "in")
+
+ggsave("~/ASHES_stacked.png", plot = ASHES_stacked, width = 10, height = 6, dpi = 600, units = "in")
+
+ggsave("~/IntlDist_stacked.svg", plot = IntlDist_stacked, width = 10, height = 6, units = "in")
+
+ggsave("~/ASHES_stacked.svg", plot = ASHES_stacked, width = 10, height = 6, units = "in")
+
+```
+
+#Bubble plot of total ASV count
+
+```{r}
+#one row per taxa with total ASVs
+unique(table_asv$taxa)
+
+bubble_df <- upset_asv %>%
+  group_by(FeatureID, full_location_name, taxa) %>%
+  summarise(present = any(SEQUENCE_COUNT > 0), .groups = "drop") %>%
+  filter(present) %>%
+  group_by(full_location_name, taxa) %>%
+  summarise(total_ASVs = n_distinct(FeatureID), .groups = "drop") %>% 
+  filter(taxa != "Unknown Eukaryota")
+
+axial_bubble <- ggplot(bubble_df,
+       aes(x = full_location_name,
+           y = taxa,
+           size = total_ASVs,
+           fill = taxa)) +
+  geom_point(shape = 21, color = "#525252", stroke = 0.8, alpha = 0.9) +
+  scale_fill_manual(values = taxa) +
+  guides(fill = guide_legend(
+    override.aes = list(size = 6)  # increase this number
+  )) +
+  scale_size_continuous(range = c(3, 18)) +
+  theme_linedraw() +
+  labs(x = "",
+       y = "",
+       size = "Number of ASVs") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1,
+                               color = "black", face = "bold", size = 11),
+    axis.text.y = element_text(color = "black", face = "bold", size = 11),
+    axis.title = element_text(color = "black", face = "bold", size = 12),
+    legend.position = "right",
+    legend.title = element_blank(),
+  legend.text = element_text(size = 12))
+  
+
+ggsave("~/axial_bubble.png", plot = axial_bubble, width = 10, height = 10 , dpi = 600, units = "in")
+
+```
+
+#7. NMDS
+
+```{r}
+#NMDS
+
+#Do not average replicates for NMDS for the first round to ensure they are clustering together closely
+
+#library(vegan)
+
+##Need ASV table and data sheet that contains only the samples I want to include in analysis (axial_metadata
+axial_metadata <- axial_metadata %>% 
+  column_to_rownames("Sample")
+
+axial_asv <- ASV %>% 
+  filter(FeatureID %in% asv_keep$FeatureID) %>% 
+  column_to_rownames("FeatureID") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Sample") %>% 
+  filter(Sample %in% rownames(axial_metadata)) 
+
+#Ensure there are no samples that have all zeros
+axial_asv <- axial_asv %>%
+  mutate(row_sum = rowSums(select(., where(is.integer)))) %>%
+  filter(row_sum != 0) %>%
+  select(-row_sum)
+
+#Prep matrix
+ASV_matrix <- axial_asv %>%
+  column_to_rownames("Sample") %>% 
+  select(where(is.integer)) %>%
+  as.matrix()
+
+#Compute Bray-Curtis and run NMDS
+set.seed(123)
+axial_nmds <- metaMDS(ASV_matrix, distance = "bray") ##Run 20 stress 0.11
+
+
+#Extract NMDS scores
+# Extract NMDS coordinates for samples
+nmds_scores <- as.data.frame(scores(axial_nmds, display = "sites"))
+
+# Add Sample names as a column
+nmds_scores <- nmds_scores %>%
+  rownames_to_column("Sample")
+
+unique(axial_metadata$location_name)
+
+NMDS_metadata <- axial_metadata %>% rownames_to_column("Sample") %>% 
+  left_join(nmds_scores, by = "Sample") %>% 
+  mutate(assoc_vent = case_when(
+    location_name == "ASHES" ~ "ASHES Plume",
+    location_name == "International District" ~ "International District Plume",
+    location_name == "Diva" ~ "International District Vent",
+    location_name == "Gollum" ~ "ASHES Vent",
+    location_name == "Anemone" ~ "ASHES Vent",
+    location_name == "Background" ~ "Background"))
+
+NMDS_metadata <- NMDS_metadata %>%
+  mutate(full_location_name = paste(location_name, depth_category, sep = "-")) %>% 
+  mutate(full_location_name = case_when(
+    str_detect(full_location_name, "Anemone|Gollum") ~ "ASHES Vent",
+    str_detect(full_location_name, "Diva") ~ "International District Vent",
+    str_detect(full_location_name, "Background") ~ "Background",
+    TRUE ~ full_location_name)) %>% #Use this to make labels for plot
+  mutate(vent_field = case_when(
+    str_detect(full_location_name, "ASHES") ~ "ASHES",
+    str_detect(full_location_name, "International") ~ "International District",
+    str_detect(full_location_name, "Background") ~ "Background"))
+  
+  
+unique(axial_metadata$depth_category)
+
+NMDS_metadata <- NMDS_metadata %>%
+  mutate(depth_category = factor(
+    depth_category,
+    levels = c(
+      "Euphotic",
+      "Oxycline",
+      "Above Plume",
+      "Plume Top",
+      "Mid Plume",
+      "Under Plume",
+      "Diffuse",
+      "Background")))
+
+#Plot NMDS
+axial_NMDS_updated <- ggplot(NMDS_metadata, aes(x = NMDS1, y = NMDS2)) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  geom_point(aes(color = vent_field, shape = depth_category), size = 3) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  scale_shape_manual(name = "Depth Category", values = c(
+    "Euphotic" = 8,
+    "Oxycline" = 3,
+    "Above Plume" = 23,
+    "Plume Top" = 25,
+    "Mid Plume" = 21,
+    "Under Plume" = 4,
+    "Diffuse" = 24,
+    "Background" = 22)) +
+  theme(
+    axis.text.y = element_text(colour = "black", size = 10),
+    axis.text.x = element_text(colour = "black", size = 10), 
+    axis.title.y = element_text(face = "bold", size = 11), 
+    axis.title.x = element_text(face = "bold", size = 11, colour = "black"), 
+    panel.background = element_blank(), 
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.2),
+    legend.title = element_text(size = 12, colour = "black", face = "bold"),
+    legend.text = element_text(size = 10, colour ="black"), 
+    legend.position = "right",
+    legend.key = element_blank(),
+    legend.key.size = unit(0.5, "lines"),
+    legend.spacing.y = unit(0.1, "lines"),
+    legend.spacing.x = unit(0.1, "lines")) +
+  labs(x = "NMDS1", y = "NMDS2") #+
+geom_text(aes(label = full_location_name)) 
+
+ggsave("~/axial_NMDS_updated.png", plot = axial_NMDS_updated, width = 8, height = 4, dpi = 600, units = "in")
+
+ggsave("~/axial_NMDS_updated.svg", plot = axial_NMDS_updated, width = 8, height = 4, units = "in")
+  
+```
+
+#8.1 CLR heatmap with dendogram
+
+```{r}
+#Keep ASVs that only have 50 or more sequences and are found in two or more samples
+#library(compositions)
+
+clr_asv <- ASV %>% 
+  pivot_longer(
+    cols = -c(FeatureID),
+    names_to = "sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  filter(FeatureID %in% asv_keep$FeatureID) %>% 
+  filter(sample %in% axial_metadata$Sample) 
+
+clr_wide <- clr_asv %>% 
+  pivot_wider(id_cols = FeatureID,
+    names_from = sample,
+    values_from = SEQUENCE_COUNT)
+
+clr_wide <- clr_wide %>% 
+  column_to_rownames("FeatureID") 
+
+clr_matrix <- as.matrix(clr_wide)
+
+clr_matrix <- clr(clr_matrix)
+
+clr_DF <- as.data.frame(clr_matrix) %>% 
+  rownames_to_column("FeatureID") %>% 
+  pivot_longer(cols = -FeatureID,
+               names_to = "Sample",
+               values_to = "clr") %>% 
+  left_join(tax, by = "FeatureID") %>% select(-Consensus) %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";") %>% 
+  filter(Domain == "Eukaryota") %>% 
+  filter(Phylum != "Opisthokonta") %>% 
+  mutate(Phylum = case_when( #Fix phylum
+    str_detect(Phylum, "_X$") ~ paste("Unknown"),
+    is.na(Phylum) ~ paste("Unknown"),
+    TRUE ~ Phylum)) %>% 
+  mutate(Class = case_when( #Fix class
+   str_detect(Class, "_X$") ~ paste("Unknown"),
+    is.na(Class) ~ paste("Unknown"),
+    TRUE ~ Class)) %>%
+  rowwise() %>%
+  mutate(
+    taxonomy = paste(
+      na.omit(c(
+        if (!is.na(Phylum) & !str_detect(Phylum, "_X+$") & Phylum != "Unknown") Phylum,
+        if (!is.na(Class) & !str_detect(Class, "_X+$") & Class != "Unknown") Class,
+        if (!is.na(Genus) & !str_detect(Genus, "_X+$") & Genus != "Unknown") Genus)),
+      collapse = ";")) %>%
+  ungroup() #I think metadata left_join accidentally got removed
+
+clr_DF <- clr_DF %>% 
+  mutate(depth_category = case_when(
+    depth_category == "Diffuse" ~ location_name,
+    location_name %in% c("ASHES", "International District") ~ 
+    paste(location_name, depth_category),
+    TRUE ~ depth_category)) 
+
+
+#plotting genus not species (FeatureID) level, average all ASVs with the same taxonomy label. 
+
+tax_matrix <- clr_DF %>%
+  group_by(taxonomy, Sample) %>% 
+  summarise(clr = mean(clr), .groups = "drop") %>%
+  pivot_wider(names_from = Sample, values_from = clr) %>%
+  column_to_rownames("taxonomy") %>%
+  as.matrix() 
+
+#Are there multiple samples for each site depth category (i.e ASHES peak plume)? If so, these CLR values should be averaged too. 
+
+tax_matrix_depth <- clr_DF %>% 
+  group_by(depth_category, taxonomy) %>% 
+  summarise(clr = mean(clr), .groups = "drop") %>%
+  pivot_wider(names_from = depth_category, values_from = clr) %>%
+  column_to_rownames("taxonomy") %>%
+  as.matrix()
+
+tax_matrix_depth[is.na(tax_matrix_depth)] <- 0
+
+
+# Rows (taxa)
+##NOTE: euclidean is the distance between two points. In this case, how different the CLR values. 
+#Need to calculate how different two taxa are based on their CLR profiles across plume depths
+dist_rows <- dist(tax_matrix_depth, method = "euclidean")
+hc_rows <- hclust(dist_rows, method = "average")
+
+# Columns (depth categories)
+dist_cols <- dist(t(tax_matrix_depth), method = "euclidean")
+hc_cols <- hclust(dist_cols, method = "average")
+
+#library(pheatmap)
+
+pheatmap(
+  tax_matrix_depth,
+  cluster_rows = hc_rows,
+  cluster_cols = hc_cols,
+  color = colorRampPalette(c("navy", "white", "red"))(100),
+  border_color = "black",
+  fontsize_row = 8,
+  fontsize_col = 8,
+  angle_col = 45)
+
+```
+
+#8.2 Plume CLR heatmap
+
+```{r}
+clr_asv <- alpha_ASV %>% 
+  select(-Sample) %>% 
+  separate(DepthCat_Location,
+           into = c("DIVE","FILTER","DEPTH_CATEGORY", "Location_Name", "DEPTH", "REP"),  
+           sep = "-", 
+           remove = TRUE) %>%
+  filter(str_detect(DEPTH_CATEGORY, regex("plume", ignore_case = TRUE))) %>% #Regex ignores case sensitivies
+  mutate(DepthCat_Location = paste(DIVE,FILTER,DEPTH_CATEGORY, Location_Name, DEPTH, REP, sep = "-")) %>% 
+  select(-DIVE, -FILTER, -DEPTH_CATEGORY, -Location_Name, -DEPTH, -REP)
+
+clr_wide <- clr_asv %>% 
+  pivot_wider(id_cols = FeatureID,
+              names_from = DepthCat_Location,
+              values_from = SEQUENCE_COUNT)
+
+
+clr_wide <- clr_wide %>% 
+  column_to_rownames("FeatureID") 
+
+clr_matrix <- as.matrix(clr_wide)
+
+clr_matrix <- clr(clr_matrix)
+
+clr_DF <- as.data.frame(clr_matrix) %>% 
+  rownames_to_column("FeatureID") %>% 
+  pivot_longer(cols = -FeatureID,
+               names_to = "Sample",
+               values_to = "clr") %>% 
+  left_join(tax, by = "FeatureID") %>% select(-Consensus) %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";") %>% 
+  filter(Domain == "Eukaryota") %>% 
+  filter(Phylum != "Opisthokonta") %>% 
+  mutate(Phylum = case_when( #Fix phylum
+    str_detect(Phylum, "_X$") ~ paste("Unknown"),
+    is.na(Phylum) ~ paste("Unknown"),
+    TRUE ~ Phylum)) %>% 
+  mutate(Class = case_when( #Fix class
+   str_detect(Class, "_X$") ~ paste("Unknown"),
+    is.na(Class) ~ paste("Unknown"),
+    TRUE ~ Class)) %>%
+  rowwise() %>%
+  mutate(
+    taxonomy = paste(
+      na.omit(c(
+        if (!is.na(Phylum) & !str_detect(Phylum, "_X+$") & Phylum != "Unknown") Phylum,
+        if (!is.na(Class) & !str_detect(Class, "_X+$") & Class != "Unknown") Class,
+        if (!is.na(Genus) & !str_detect(Genus, "_X+$") & Genus != "Unknown") Genus)),
+      collapse = ";")) %>%
+  ungroup() %>% separate(Sample,
+           into = c("DIVE","FILTER","DEPTH_CATEGORY", "Location_Name", "DEPTH", "REP"),  
+           sep = "-", 
+           remove = TRUE) %>% 
+  mutate(Sample = paste(DEPTH_CATEGORY, Location_Name, sep = "-")) #remove repID so it's same sample ID
+
+tax_matrix <- clr_DF %>%
+  group_by(taxonomy, Sample) %>% 
+  summarise(clr = mean(clr), .groups = "drop") %>% 
+  pivot_wider(names_from = Sample, values_from = clr) %>%
+  column_to_rownames("taxonomy") %>%
+  as.matrix() 
+
+tax_matrix[is.na(tax_matrix)] <- 0
+
+
+# Rows (taxa)
+##NOTE: euclidean is the distance between two points. In this case, how different the CLR values. 
+#Need to calculate how different two taxa are based on their CLR profiles across plume depths
+dist_rows <- dist(tax_matrix, method = "euclidean")
+hc_rows <- hclust(dist_rows, method = "average")
+
+# Columns (depth categories)
+dist_cols <- dist(t(tax_matrix), method = "euclidean")
+hc_cols <- hclust(dist_cols, method = "average")
+
+#library(pheatmap)
+
+clr_dendo_plume <- pheatmap(
+  tax_matrix,
+  cluster_rows = hc_rows,
+  cluster_cols = hc_cols,
+  color = colorRampPalette(c("navy", "white", "red"))(100),
+  border_color = "black",
+  fontsize_row = 8,
+  fontsize_col = 8,
+  angle_col = 45)
+
+
+ggsave("~/clr_dendo_plume.png", plot = clr_dendo_plume, width = 6, height = 8, dpi = 600, units = "in")
+
+
+##Remove the least variable taxa to clean up the figure
+install.packages("matrixStats")
+library(matrixStats)
+
+# Calculate variance across samples for each taxonomy row
+taxa_variance <- rowVars(tax_matrix)
+
+# Keep top 50 most variable taxonomies
+top_taxa <- order(taxa_variance, decreasing = TRUE)[1:50]
+tax_filtered <- tax_matrix[top_taxa, ]
+
+# Recalculate clustering on filtered matrix
+dist_rows_filtered <- dist(tax_filtered, method = "euclidean")
+hc_rows_filtered <- hclust(dist_rows_filtered, method = "average")
+
+dist_cols_filtered <- dist(t(tax_filtered), method = "euclidean")
+hc_cols_filtered <- hclust(dist_cols_filtered, method = "average")
+
+# Plot filtered heatmap
+clr_dendo_plume_filtered <- pheatmap(
+  tax_filtered,
+  cluster_rows = hc_rows_filtered,
+  cluster_cols = hc_cols_filtered,
+  color = colorRampPalette(c("navy", "white", "red"))(100),
+  border_color = "black",
+  fontsize_row = 8,
+  fontsize_col = 8,
+  angle_col = 90
+)
+
+# Save figure
+ggsave(
+  "~/clr_dendo_plume_filtered.png",
+  plot = clr_dendo_plume_filtered,
+  width = 7,
+  height = 8,
+  dpi = 600,
+  units = "in"
+)
+```
+
+#9 Bray Curtis Dissimilarity of plume samples vs. background
+
+```{r}
+bc_asv <- alpha_ASV %>% 
+  select(-Sample) %>% 
+  separate(DepthCat_Location,
+           into = c("DIVE","FILTER","DEPTH_CATEGORY", "Location_Name", "DEPTH", "REP"),  
+           sep = "-", 
+           remove = TRUE) %>%
+  filter(str_detect(DEPTH_CATEGORY, regex("plume|Background", ignore_case = TRUE))) %>% #Regex ignores case sensitivies
+  mutate(Sample = paste(DIVE,FILTER,DEPTH_CATEGORY, Location_Name, DEPTH, sep = "-")) %>% 
+  select(-DIVE, -FILTER, -DEPTH_CATEGORY, -Location_Name, -DEPTH, -REP) %>% 
+  group_by(FeatureID, Sample) %>% 
+  summarise(total_seq = sum(SEQUENCE_COUNT)) 
+
+bc_wide <- bc_asv %>% 
+  pivot_wider(id_cols = FeatureID,
+              names_from = Sample,
+              values_from = total_seq)
+
+
+bc_wide <- bc_wide %>% 
+  column_to_rownames("FeatureID") 
+
+
+# Raw abundance
+bc_matrix <- as.matrix(bc_wide)
+
+# Bray-Curtis
+bray_dist <- vegdist(t(bc_matrix), method = "bray") #need transpose to compare samples to samples
+
+bc_scores <- as.data.frame(as.matrix(bray_dist)) %>%
+  rownames_to_column("Sample1") %>% 
+  pivot_longer(cols = -Sample1, 
+               names_to = "Sample2",
+               values_to = "BrayCurtis") %>% 
+  filter(str_detect(Sample2, regex("background", ignore_case = TRUE))) %>% #Summarize depth_category vs background
+  mutate(Sample1_site = case_when(
+    str_detect(Sample1, "Above Plume-ASHES") ~ "Above Plume-ASHES",
+    str_detect(Sample1, "Mid Plume-ASHES") ~ "Mid Plume-ASHES",
+    str_detect(Sample1, "Plume Top-ASHES") ~ "Plume Top-ASHES",
+    str_detect(Sample1, "Background") ~ "Background",
+    str_detect(Sample1, "Above Plume-International District") ~ "Above Plume-International District",
+    str_detect(Sample1, "Mid Plume-International District") ~ "Mid Plume-International District",
+    str_detect(Sample1, "Plume Top-International District") ~ "Plume Top-International District",
+    str_detect(Sample1, "Under Plume-International District") ~ "Under Plume-International District",
+    str_detect(Sample1, "Under Plume-ASHES") ~ "Under Plume-ASHES",
+    TRUE ~ Sample1)) %>% 
+  filter(Sample1_site != "Background") %>% 
+  mutate(Sample2_Site = case_when(
+    str_detect(Sample2, "Background") ~ "Background",
+    TRUE ~ Sample2)) %>% 
+    group_by(Sample1_site, Sample2_Site) %>% 
+  summarise(meanBray = mean(BrayCurtis))
+
+order <- c("Under Plume-International District", "Mid Plume-International District", "Plume Top-International District", "Above Plume-International District", "Under Plume-ASHES", "Mid Plume-ASHES", "Plume Top-ASHES", "Above Plume-ASHES")
+
+bc_scores <- bc_scores %>% 
+  mutate(Sample1_site = factor(Sample1_site, levels = order))
+
+ASHES_bc <- bc_scores %>% 
+  filter(str_detect(Sample1_site, "ASHES"))
+
+International_bc <- bc_scores %>% 
+  filter(str_detect(Sample1_site, "International"))
+
+
+unique(bc_scores$Sample1_site)
+
+ASHES_bc <- ggplot(ASHES_bc, aes(y = Sample1_site, x = meanBray)) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    y = "Plume Depth Category",
+    x = "Mean Bray-Curtis distance to Background"
+  )
+
+IntlDist_bc <- ggplot(International_bc, aes(y = Sample1_site, x = meanBray)) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    y = "Plume Depth Category",
+    x = "Mean Bray-Curtis distance to Background"
+  )
+
+bc_patch <- ASHES_bc/IntlDist_bc
+
+ggsave(
+  "~/bc_patch.png",
+  plot = bc_patch,
+  width = 7,
+  height = 8,
+  dpi = 600,
+  units = "in")  
+```
