@@ -1,0 +1,670 @@
+---
+title: "axial_SphereOfInfluence_code"
+format: html
+editor: visual
+---
+
+Moving from just the plume profile and adding in more samples to instead look at "sphere of influence".
+
+#Setting up environment
+
+```{r}
+#Expanded sample list from plume profile to sphere of influence
+
+library(readr)
+library(tidyverse)
+library(phyloseq)
+library(readxl)
+
+#Import data
+all_metadata_jan2026 <- read_csv("~/R/Axial2023/datainput/all_metadata_jan2026_v6.csv")
+axial_decontam_DF <- read_excel("~/R/Axial2023/datainput/axial_decontam_DF.xlsx")
+ASV <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/clean_ASV.tsv",
+                  header = TRUE, sep = "\t")
+tax <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/taxonomy.tsv", header = TRUE, sep = "\t")
+
+samplestokeep_updated <- read_csv("~/R/Axial2023/datainput/axial_samplestokeep_updated.csv")
+
+axial_euk_cell_counts <- read_csv("~/R/Axial2023/datainput/axial_euk_cell_counts.csv")
+
+#Make metadata sheet and fix naming
+tax <- tax %>% rename(FeatureID = Feature.ID)
+
+all_metadata_jan2026 <- all_metadata_jan2026 %>% 
+  rename(Sample = X)
+
+axial_metadata <- all_metadata_jan2026 %>% filter(site == "Axial") %>% 
+  filter(Sample %in% samplestokeep_updated$Sample) 
+
+###Adjust sample name and identify replicates
+axial_metadata_wReps <- axial_metadata %>% 
+  mutate(DepthCat_Location = paste(dive_ctd, filter, sample_name, location_name, depth_category, depth, sep = "-"))
+
+#write.csv(axial_metadata_wReps, "axial_metadata_wReps.csv", row.names = FALSE)
+
+axial_metadata_wReps <- read_csv("~/R/Axial2023/axial_metadata_wReps.csv")
+
+#Create two different sample identifiers for grouping (one general, one specific)
+axial_metadata_wReps <- axial_metadata_wReps %>% 
+  mutate(sample_type = case_when(
+    depth_category == "above vent" ~ "Above Vent", 
+    depth_category == "oxycline" ~ "Water Column", 
+    depth_category == "euphotic" ~ "Water Column",
+    depth_category == "diffuse" ~ "Diffuse Vent", 
+    depth_category == "30m above" ~ "Water Column", 
+    str_detect(depth_category, "plume") ~ "Water Column",
+    depth_category == "background" ~ "Background",
+    TRUE ~ depth_category)) %>%
+  mutate(sample_name = case_when(
+    sample_name == "SoupyBSW" ~ "Caldera Basin Water", 
+    TRUE ~ sample_name)) %>% 
+  mutate(depth_location = paste(sample_type, sample_name, depth, sep = "-")) %>% 
+  mutate(depth_location = case_when(
+    str_detect(depth_location, "Background-Background-1200") ~ "Background-1200", 
+    str_detect(depth_location, "Background-Background-1300") ~ "Background-1300",
+    str_detect(depth_location, "Background-Background-1400") ~ "Background-1400",
+    TRUE ~ depth_location)) %>% 
+  mutate(depth_location_wReps = paste(depth_location, Rep, sep = "-"))
+
+```
+
+#Env heatmap
+
+```{r}
+#Don't use the table with ASV data because you will loose high temp vents
+
+env_data <- axial_metadata_wReps %>%
+  select(depth_location, depth, eukCONC, prok, pH, TOC, TDN,
+         Cl, SO4, Na, K, Mg, `18S`, Ca, temp) %>%
+  distinct() %>% 
+  mutate(`18S` = as.character(`18S`)) %>% 
+  mutate(
+    depth_location = reorder(depth_location, -depth)) #order by depth_location using the depth column
+
+variable_fill <- list(
+  "Depth" = "depth",
+  "Temp" = "temp",
+  "Euk Cell Count" = "eukCONC",
+  "Prok Cell Abundance" = "prok",
+  "pH" = "pH",
+  "TOC" = "TOC",
+  "TDN" = "TDN",
+  "Cl" = "Cl",
+  "SO4" = "SO4",
+  "Na" = "Na",
+  "K" = "K",
+  "Mg" = "Mg",
+  "Ca" = "Ca",
+  "18S" = "18S")
+
+#Set scales
+scale_fill <- list( 
+  scale_fill_gradient(low = "#ADD", high = "#191970"), # depth
+  scale_fill_gradient(low = "lightblue", high = "coral"), #temp
+  scale_fill_gradient(low = "#d8d8f0", high = "#DA70D6"), # eukCONC
+  scale_fill_gradient(low = "#d8d8f0", high = "#8B008B"), # prok
+  scale_fill_gradient(low = "#B22", high = "#8A2BE2"), # pH
+  scale_fill_gradient(low = "#efa", high = "#FF7F50"), # TOC
+  scale_fill_gradient(low = "#e38aa6", high = "#D77"), # TDN
+  scale_fill_gradient(low = "#DAA", high = "#ba4e70"), # Cl
+  scale_fill_gradient(low = "#a13356", high = "#8a1a3d"), # SO4
+  scale_fill_gradient(low = "#EEE", high = "#BDB"), # Na
+  scale_fill_gradient(low = "#EEE8AA", high = "#BDB76B"), # K
+  scale_fill_gradient(low = "#7B68EE", high = "#483D8B"), # Mg
+  scale_fill_gradient(low = "indianred", high = "orange"), #Ca
+  scale_fill_manual(values = c("0" = "#F5FFFA", "1" = "#000000"))) #18S
+
+names(scale_fill) <- names(variable_fill)
+
+env_heatmap <- ggplot(env_data, aes(y = depth_location)) +
+  purrr::imap(variable_fill, \(x, y) {
+    list(
+      geom_tile(
+        aes(x = y, fill = .data[[x]]),
+        color = "black",
+        width = 0.95),
+      scale_fill[[y]],
+      ggnewscale::new_scale_fill())}) +
+  theme_void() +
+  theme(
+    axis.text.y = element_text(hjust = 1),
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title = element_blank(),
+    legend.position = "right",
+  legend.box = "vertical",
+  legend.direction = "horizontal")
+
+ggsave("~/env_heatmap.png", plot = env_heatmap, width = 10, height = 10, dpi = 600, units = "in")
+```
+
+#Stacked bar plot of relative abundance
+
+```{r}
+#Keep ASVs that only have 50 or more sequences and are found in two or more samples
+asv_keep <- ASV %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  group_by(FeatureID) %>%
+  summarise(
+    total_reads = sum(SEQUENCE_COUNT),
+    prevalence = sum(SEQUENCE_COUNT > 0),
+    .groups = "drop") %>%
+  filter(total_reads >= 50, prevalence >= 2)
+
+samplestokeep_ASV <- ASV %>% 
+  filter(FeatureID %in% asv_keep$FeatureID) %>% 
+  pivot_longer(
+    cols = -c(FeatureID),
+    names_to = "Sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  filter(Sample %in% axial_metadata$Sample) 
+
+table_asv <-  samplestokeep_ASV %>% 
+  left_join(axial_metadata, by = "Sample") %>% 
+  left_join(tax, by = "FeatureID") %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";")
+
+alv <- c("Alveolata-Ellobiopsidae", "Alveolata-Perkinsea", "Alveolata-Unknown", "Alveolata-Chrompodellids", "Alveolata-Apicomplexa")
+
+#Curate taxonomy
+#library(dplyr)
+#library(stringr)
+#library(purrr)
+
+tax_asv_metadata <- table_asv %>% 
+  filter(Domain == "Eukaryota") %>% 
+  filter(Phylum != "Opisthokonta") %>% 
+  mutate(
+    Phylum = case_when(
+      str_detect(Phylum, "_X$") ~ "Unknown",
+      is.na(Phylum) ~ "Unknown",
+      TRUE ~ Phylum),
+    Class = case_when(
+      str_detect(Class, "_X$") ~ "Unknown",
+      is.na(Class) ~ "Unknown",
+      TRUE ~ Class),
+    Genus = case_when(
+      str_detect(Genus, "_X") ~ "Unknown",
+      is.na(Genus) ~ "Unknown",
+      TRUE ~ Genus),
+    Order = case_when(
+      str_detect(Order, "_X") ~ "Unknown",
+      is.na(Order) ~ "Unknown",
+      TRUE ~ Order)) %>% 
+  rowwise() %>% #Taxonomy to the order level
+  mutate(
+    taxonomy_collapse = paste(
+      na.omit(c(
+        if (Phylum != "Unknown") Phylum, 
+        if (Class != "Unknown") Class,
+        if (Genus != "Unknown") Genus, 
+        if (Order != "Unknown") Order)),
+      collapse = ";")) %>% 
+   mutate(phylum_class = paste(Phylum, Class, sep = "-")) %>% 
+  mutate(taxa = case_when( #Curate taxonomy
+    Supergroup == "Eukaryota_X" ~ "Unknown Eukaryota",
+    Class == "Cercozoa" ~ "Rhizaria-Cercozoa",
+    Class == "Radiolaria" ~ "Rhizaria-Radiolaria",
+    phylum_class == "Unknown-Unknown" ~ "Unknown Eukaryota",
+    str_detect(phylum_class, "Unknown-Amoebozoa_XX|Tubulinea|Evosea") ~ "Amoebozoa",
+    phylum_class %in% alv ~ "Alveolata-Other",
+    phylum_class == "Stramenopiles-Unknown" ~ "Stramenopiles-Other",
+    str_detect(phylum_class, "Discoba|Metamonada") ~"Excavata",
+    str_detect(phylum_class, "Cryptophyta|Kathablepharida") ~"Cryptista",
+    str_detect(phylum_class, "Chlorophyta|Prasinodermophyta|Picozoa") ~"Archaeplastida",
+    str_detect(phylum_class, "Apusomonada|Breviatea|Amoebozoa") ~"Amorphea",
+    str_detect(phylum_class, "Centroplasthelida|Haptophyta") ~"Haptista",
+    str_detect(phylum_class, "Nibbleridia") ~"Provora-Nibbleridia",
+    str_detect(phylum_class, "Collodictyonidae|Mantamonadidea") ~ "CRuMS",
+    str_detect(phylum_class, "Telonemia") ~ "Telonemia",
+    TRUE ~ phylum_class)) %>% 
+  left_join(
+  axial_metadata_wReps %>% 
+    select(Sample, depth_location, depth_location_wReps),
+  by = "Sample") 
+
+#If plotting using broader depth_location this collapses replicates so sum sequences.
+#Aggregate ASVs into taxonomy groups (taxonomy_collapse) and calculate rel seq abun. 
+
+collapsed_reps_ASV <- tax_asv_metadata %>% 
+  group_by(taxonomy_collapse, depth_location) %>% 
+  summarise(
+    seq_sum = sum(SEQUENCE_COUNT, na.rm = TRUE),
+    across(
+      c(taxa, phylum_class,
+        location_name, sample_name, depth),
+      first),
+    .groups = "drop") %>% 
+  group_by(depth_location) %>% 
+   mutate(sample_seq_total = sum(seq_sum),
+         taxa_relAbun = seq_sum / sample_seq_total) %>% 
+  ungroup() %>% mutate(
+    depth_location = reorder(depth_location, -depth))
+  
+
+taxa <- c("Alveolata-Dinoflagellata" = "cornflowerblue","Rhizaria-Radiolaria" = 
+            "coral4","Alveolata-Ciliophora" = "coral", 
+          "Stramenopiles-Gyrista" = "chocolate","Rhizaria-Cercozoa" = "cadetblue","Stramenopiles-Bigyra" = "aquamarine","Archaeplastida" = "firebrick4", 
+          "Discosea-Unknown" = "plum4","Stramenopiles-Other" = "lightsalmon", "Amorphea" = "darkolivegreen3","Haptista" = "gold","Amoebozoa" = "lightgoldenrod",
+          "Unknown Eukaryota" = "mistyrose","Telonemia" = "rosybrown","Alveolata-Other" = "peachpuff4","Cryptista" = "coral3","CRuMS" = "darkcyan",
+          "Excavata" = "orchid","Provora-Nibbleridia" = "powderblue")
+
+bydepth_stackedbar <- ggplot(collapsed_reps_ASV, aes(y = depth_location, x = taxa_relAbun, fill = taxa)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = taxa) +
+  theme_minimal(base_size = 12) +
+  theme(
+    # Text
+    axis.text.x = element_text(face = "bold", color = "black", size = 12),
+    axis.text.y = element_text(face = "bold", color = "black", size = 11),
+    axis.title = element_text(color = "black", face = "bold"),
+    strip.text = element_text(color = "black", face = "bold", size = 12),
+    legend.text = element_text(color = "black", size = 14),
+    
+    # Backgrounds
+     plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray", color = NA),
+    
+    # Gridlines
+    panel.grid = element_blank(),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_blank()) +
+  labs(
+    title = "",
+    x = "",
+    y = "") +
+  guides(fill = guide_legend(title = NULL))
+
+ggsave("~/bydepth_stackedbar.png", plot = bydepth_stackedbar, width = 8, height = 8, dpi = 600, units = "in")
+
+```
+
+#K-means clustering by sequence data. Normalize raw sequence data around samples.
+
+```{r}
+#install.packages("anomalize")
+#library(anomalize)
+
+#install.packages("cluster")
+#library(cluster)
+
+#install.packages("factoextra")
+#library(factoextra)
+
+#library(vegan)
+
+set.seed(1776)
+
+#Group by depth_category, location_name, depth. Use depth_location. 
+unique(tax_asv_metadata$depth_location)
+
+seq_only_mat <- tax_asv_metadata %>% 
+  group_by(depth_location, FeatureID) %>% 
+  summarise(
+    mean_rep_seq = mean(SEQUENCE_COUNT, na.rm = TRUE),
+    .groups = "drop") %>% 
+  pivot_wider(names_from = FeatureID, values_from = mean_rep_seq, values_fill = 0) %>%   distinct() %>% 
+  drop_na() %>%
+  column_to_rownames(var = "depth_location") %>% 
+  as.matrix
+
+#Normalize matrix of numeric metadata
+# Using clr approach, margin is set to 2 to perform this across each ASV ID, so the relationships between samples can be determined. 
+standarize_seq <- decostand(seq_only_mat, MARGIN = 2, method = "rclr")
+
+# Output from here should be stn_niskin
+rownames(standarize_seq) <- rownames(seq_only_mat)
+colnames(standarize_seq) <- colnames(seq_only_mat)
+
+#Group to see how many clusters are needed
+kclusts <-
+  tibble(k = 2:10) %>%
+  mutate(
+    kclust = map(k, ~ kmeans(standarize_seq, .x)),
+    glanced = map(kclust, broom::glance))
+
+# Unnest
+output_kclusts <- kclusts %>%
+  unnest(cols = c(glanced))
+# ?kmeans
+
+# plot shows hypothetical number of k clusters (x-axis) vs the within-cluster variance (y-axis). AS we increase the number of clusters, the variance within each cluster get smaller because clustering groups become more significant. 
+output_kclusts %>%
+  ggplot(aes(x = k, y = tot.withinss)) +
+    geom_line(alpha = 0.5, linewidth = 1.2, color = "darkgreen") +
+    geom_point(size = 2, color = "darkgreen") +
+  theme_linedraw()
+
+#Perform Kmeans with 7 centers
+kmeans_seq_7 <- kmeans(standarize_seq, centers = 7)
+summary(kmeans_seq_7)
+
+# Report some findings using "broom"
+broom::tidy(kmeans_seq_7)
+
+broom::glance(kmeans_seq_7)
+
+# Combine with data
+output_kmeans_seq7 <- broom::augment(kmeans_seq_7, standarize_seq)
+head(data.frame(output_kmeans_seq7)) 
+
+kmeans_membership_7 <- data.frame(output_kmeans_seq7) %>% 
+  select(depth_location = `.rownames`, CLUSTER = `.cluster`) %>% distinct()
+
+# Samples in each cluster
+summary(kmeans_membership_7$CLUSTER)
+
+#Create new metadata sheet with cluster info and averaged sequences
+depth_order <- tax_asv_metadata %>%
+  distinct(depth_location, depth) %>%
+  arrange(desc(depth)) %>%
+  pull(depth_location)
+
+
+k_cluster <- tax_asv_metadata %>% 
+  select(depth_location, depth, location_name) %>% 
+  distinct()  %>% 
+  left_join(kmeans_membership_7, by = "depth_location") %>% 
+   mutate(CLUSTER = factor(CLUSTER, levels = as.character(1:7))) %>% 
+  mutate(depth_location = factor(depth_location, levels = depth_order))
+
+#Visualize which samples are in which clusters
+
+ggplot(k_cluster, aes(x = CLUSTER, y = depth_location)) +
+  geom_point(aes(color = location_name), size = 3) +
+  scale_color_manual(name = "Vent Field", values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod",
+    "Soupy Background" = "lightgoldenrod3",
+    "Marker 33" = "mediumpurple",
+    "Marker 113" = "mistyrose3")) +
+  theme(
+    axis.text.y = element_text(hjust = 1),
+    axis.text.x = element_text(colour = "black", size = 10), 
+    axis.title.x = element_text(size = 11, colour = "black"),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(), 
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.2),
+    legend.text = element_text(size = 10, colour ="black"), 
+    legend.position = "right",
+    legend.key.size = unit(0.5, "lines"),
+    legend.spacing.y = unit(0.1, "lines"),
+    legend.spacing.x = unit(0.1, "lines")) +
+  labs(x = "Cluster") 
+```
+
+
+#NMDS
+```{r}
+#Collapse replicates
+
+asv_wide <- tax_asv_metadata %>% 
+  select(FeatureID, SEQUENCE_COUNT, depth_location_wReps) %>% 
+  group_by(depth_location_wReps, FeatureID) %>% 
+  summarise(seq_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>% 
+  pivot_wider(names_from = FeatureID,
+              values_from = seq_avg,
+              values_fill = 0) %>% 
+  column_to_rownames("depth_location_wReps") %>% 
+  as.matrix() 
+
+#Compute Bray-Curtis and run NMDS
+set.seed(123)
+axial_nmds <- metaMDS(asv_wide, distance = "bray") ##stress 0.13 
+
+#Extract NMDS scores
+# Extract NMDS coordinates for samples
+nmds_scores <- as.data.frame(scores(axial_nmds, display = "sites"))
+
+# Add Sample names as a column
+nmds_scores <- nmds_scores %>%
+  rownames_to_column("depth_location_wReps")
+
+NMDS_metadata <- tax_asv_metadata %>% 
+  left_join(nmds_scores, by = "depth_location_wReps") %>% 
+  mutate(sample_name = case_when(
+    sample_name == "SoupyBSW" ~ "Caldera Basin Water", 
+    sample_name == "IntlDist" ~ "International District",
+    TRUE ~ sample_name)) %>% 
+  mutate(sample_type = case_when(
+    depth_category == "above vent" ~ "Above Vent", 
+    depth_category == "oxycline" ~ "Oxycline", 
+    depth_category == "euphotic" ~ "Euphotic",
+    depth_category == "diffuse" ~ "Diffuse Vent", 
+    depth_category == "30m above" ~ "Water Column", 
+    str_detect(depth_category, "plume") ~ "Water Column",
+    str_detect(location_name, "Soupy") ~ "Caldera Basin Water",
+    depth_category == "background" ~ "Background",
+    TRUE ~ depth_category))
+
+NMDS <- ggplot(NMDS_metadata, aes(x = NMDS1, y = NMDS2)) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  geom_point(aes(shape = sample_type, color = sample_name), size = 3) +
+  scale_color_manual(name = "Sample Location", values = c(
+    "Anemone" = "lightgoldenrod",
+    "Gollum" = "orange",
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Diva" = "darkcyan",
+    "Background" = "darkblue",
+    "Caldera Basin Water" = "darkblue",
+    "Marker 33" = "mediumpurple",
+    "Marker 113" = "mistyrose3")) +
+   scale_shape_manual(name = "Sample Location", values = c(
+    "Above Vent" = 25,
+    "Diffuse Vent" = 24,
+    "Water Column" = 19,
+    "Oxycline" = 1,
+    "Background" = 15,
+    "Euphotic" = 1, 
+    "Caldera Basin Water" = 0)) +
+  theme(
+    axis.text.y = element_text(colour = "black", size = 10),
+    axis.text.x = element_text(colour = "black", size = 10), 
+    axis.title.y = element_text(face = "bold", size = 11), 
+    axis.title.x = element_text(face = "bold", size = 11, colour = "black"), 
+    panel.background = element_blank(), 
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.2),
+    legend.title = element_text(size = 12, colour = "black", face = "bold"),
+    legend.text = element_text(size = 10, colour ="black"), 
+    legend.position = "right",
+    legend.key = element_blank(),
+    legend.key.size = unit(0.5, "lines"),
+    legend.spacing.y = unit(0.1, "lines"),
+    legend.spacing.x = unit(0.1, "lines")) +
+  labs(x = "NMDS1", y = "NMDS2") #+
+geom_text(aes(label = depth_location)) 
+
+ggsave("~/NMDS.png", plot = NMDS, width = 6, height = 6, dpi = 600, units = "in")
+
+```
+
+
+#RDA Analysis
+```{r}
+set.seed(1998)
+
+#Make a categorical data table 
+categorical <- tax_asv_metadata %>% 
+  select(depth_location, depth_category, sample_name, sample_type, location_name) %>% 
+  distinct() %>% 
+    arrange(depth_location) %>% 
+  mutate(depth_category = case_when(
+    sample_name == "SoupyBSW" ~ "Caldera Bottom Water",
+    TRUE ~ depth_category))
+
+#Generate a matrix of numerical data
+metadata_RDA <- tax_asv_metadata %>%
+  group_by(depth_location) %>%
+  summarise(
+    depth = first(depth),
+    prok = mean(prok),
+    temp = mean(temp),
+    .groups = "drop"
+  ) %>%
+  arrange(depth_location) %>%
+  column_to_rownames("depth_location") %>% 
+  filter(!is.na(prok))
+
+
+#Normalize matrix of numeric metadata then re-combine with categorical metadata. 
+#Standardize compares column by column. Like location_name vs sample type.  Margin is 2. This z-scpres each environmental variable (mean = 0, SD = 1)
+
+norm_metadata <- decostand(metadata_RDA, MARGIN = 2, method = "standardize")
+
+# Combine normalized metadata with categorical data
+
+metadata_standardize <- categorical %>% 
+  right_join(as.data.frame(standarize_metadata) %>% rownames_to_column(var = "depth_location")) %>%
+  arrange(depth_location) %>% 
+  column_to_rownames(var = "depth_location")
+
+```
+
+
+#Distance decay plot - Jaccard. Does ecological dissimilarity increase with physical separation from diffuse vent?
+```{r}
+#Calculate both horizontal and vertical distance from source (diffuse)
+dist_coords_sample <- read_csv("~/R/Axial2023/dist_coords_sample.csv")
+
+#install.packages("geosphere")
+#library(geosphere)
+
+dist_df <- dist_coords_sample %>%
+  rowwise() %>%
+  mutate(
+    horizontal_distance = distHaversine(
+      c(long_Sample1, lat_Sample1),
+      c(long_Sample2, lat_Sample2))) %>%
+  ungroup()
+
+#Calculate total 3D space
+dist_df <- dist_df %>%
+  mutate(
+    distance_3d = sqrt(
+      horizontal_distance^2 +
+      z_dist^2))
+
+#Format ASV and tax table
+asv_matrix <- asv_wide %>% 
+  as.data.frame() %>% 
+  rownames_to_column("depth_location_wReps") %>% 
+  pivot_longer(cols = -depth_location_wReps,
+               names_to = "FeatureID",
+               values_to = "mean_seq") %>% 
+  separate(depth_location_wReps,
+    into = c("location","site","depth", "rep"),  
+    sep = "-") %>% select(-rep) %>% 
+  mutate(SampleID = paste(location, site, depth, sep = "-")) %>% 
+  mutate(SampleID = case_when(
+  str_detect(SampleID, "Background-1200") ~ "Background-1200",
+   str_detect(SampleID, "Background-1300") ~ "Background-1300",
+   str_detect(SampleID, "Background-1400") ~ "Background-1400",
+    TRUE ~ SampleID)) %>% 
+  select(-location, -site, -depth) %>% 
+  group_by(FeatureID, SampleID) %>%  
+  summarise(seq_sum = sum(mean_seq)) %>% 
+  pivot_wider(names_from = SampleID, values_from = seq_sum, values_fill = 0) %>% 
+  column_to_rownames("FeatureID") %>% 
+  as.matrix()
+
+tax_matrix <- tax %>% 
+  separate(Taxon, into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>% select(-Consensus) %>% column_to_rownames("FeatureID") %>% 
+  as.matrix()
+
+tax_table <- tax_table(tax_matrix)
+ASV_table <- otu_table(asv_matrix, taxa_are_rows = TRUE)
+
+physeq_object <- merge_phyloseq(ASV_table, tax_table, axial_metadata_wReps)
+
+dist <- phyloseq::distance(physeq_object, method = "jaccard")
+
+rownames(as.data.frame(as.matrix(dist)))
+
+dist <- as.data.frame(as.matrix(dist))
+
+dist_scores_df <- dist %>% 
+  rownames_to_column(var = "SampleA") %>% 
+  pivot_longer(cols = -SampleA, 
+               names_to = "SampleB") %>% 
+  mutate(Samples_combined = paste(SampleB, SampleA, sep = "-"))
+
+dist_df <- dist_df %>% 
+  mutate(Samples_combined = paste(Sample1, Sample2, sep = "-")) %>% 
+  left_join(dist_scores_df, by = "Samples_combined")
+
+#Didn't work that well. Manually download and fix. 
+write.csv(dist_df, "dist_df.csv", row.names = FALSE)
+
+dist_df_adjusted <- read_csv("~/R/Axial2023/dist_df.csv")
+
+dist_df_refined <- dist_df_adjusted %>% 
+  select(SampleA, SampleB, value, distance_3d, Samples_combined)
+
+jaccard_distance <- ggplot(dist_df_refined, aes(x = distance_3d, y = value)) +
+  geom_jitter() +
+  theme_linedraw() +
+  scale_y_continuous(limits = c(0.7,1)) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(color = "black", face = "bold", size = 12),
+        axis.text = element_text(color = "black", face = "bold", size = 12),
+        axis.title = element_text(color = "black", face = "bold", size = 12)) +
+  labs(y = "Jaccard Dissimilarity", x = "Euclidean Distance (m)") #+
+  geom_text(aes(label = Samples_combined))
+  
+ggsave("~/jaccard_distance.png", plot = jaccard_distance, width = 6, height = 6, dpi = 600, units = "in")
+```
+
+#Jaccard values to dendogram
+```{r}
+#install.packages("ggdendro")
+#library(ggdendro)
+
+dendro_plot_df <- ggdendro::dendro_data(as.dendrogram(cluster_jacc), type = "rectangle")
+label_dendro_order <- as.character(dendro_plot_df$labels$label)
+
+dist_plot <- phyloseq::distance(
+  physeq_object,
+  method = "jaccard",
+  binary = TRUE)
+
+hc <- hclust(dist_plot, method = "average")
+
+plot(hc)
+
+cluster_jacc <- hclust(dist_plot, method = "average")
+
+dendro_plot_df <- ggdendro::dendro_data(as.dendrogram(cluster_jacc), type = "rectangle")
+label_dendro_order <- as.character(dendro_plot_df$labels$label)
+# label_dendro_order
+
+ggplot(segment(dendro_plot_df)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() + 
+  scale_y_reverse(expand = c(0.2, 0.5), breaks = c(0, 0.2, 0.4, 0.6, 0.8)) + 
+  geom_text(aes(x = x, y = y, label = label, angle = 0, hjust = 0), data = label(dendro_plot_df)) + 
+  theme_dendro() + 
+  labs(y = "Dissimilarity", title = "Jaccard distance") + 
+  theme(axis.text.x = element_text(color = "black", size = 14), 
+        axis.line.x = element_line(color = "#252525"), 
+        axis.ticks.x = element_line(), axis.title.x = element_text(color = "black", size = 14)) #+ geom_text(aes(label = depth_location))
+
+
+dendro_plot_output
+
+ggsave("~/ggdendro.png", plot = ggdendro, width = 10, height = 6, dpi = 600, units = "in")
+
+```
+
