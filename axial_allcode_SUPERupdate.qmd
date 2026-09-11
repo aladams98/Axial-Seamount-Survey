@@ -1,0 +1,1759 @@
+---
+title: "axial_allcode_6.29.26"
+format: html
+editor: visual
+---
+#Set up environment
+```{r}
+
+library(readr)
+library(tidyverse)
+library(vegan)
+
+all_metadata <- read_csv("~/R/Axial2023/datainput/all_metadata_July2026.csv")
+
+ASV <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/clean_ASV.tsv", header = TRUE, sep = "\t")
+
+tax <- read.delim("C:/Users/alexis98adams/Documents/R/Axial2023/datainput/taxonomy.tsv", header = TRUE, sep = "\t")
+
+samplestokeep_updated <- read_csv("~/R/Axial2023/datainput/axial_samplestokeep_updated.csv")
+
+#axial_euk_cell_counts <- read_csv("R/Axial2023/datainput/axial_euk_cell_counts.csv")
+
+#Make metadata sheet and fix naming
+tax <- tax %>% rename(FeatureID = Feature.ID)
+
+all_metadata <- all_metadata %>% 
+  rename(Sample = X)
+
+axial_metadata_allsamples <- all_metadata %>% filter(site == "Axial") %>% 
+  filter(Sample %in% samplestokeep_updated$Sample) 
+
+#Create two different sample identifiers for grouping (one general, one specific)
+axial_metadata_allsamples <- axial_metadata_allsamples %>% 
+   mutate(sample_name = case_when(
+    sample_name == "SoupyBSW" ~ "Caldera Basin Water", 
+    TRUE ~ sample_name)) %>% 
+  mutate(sample_type = case_when(
+    sample_name == "Caldera Basin Water" ~ "Caldera Basin Water",
+    depth_category == "above vent" ~ "Above Vent", 
+    depth_category == "oxycline" ~ "Oxycline", 
+    depth_category == "euphotic" ~ "Euphotic",
+    depth_category == "diffuse" ~ "Diffuse", 
+    depth_category == "30m above" ~ "Water Column", 
+    str_detect(depth_category, "plume") ~ "Water Column",
+    depth_category == "background" ~ "Background",
+    TRUE ~ depth_category)) %>% 
+  mutate(depth_location = paste(sample_type, sample_name, depth, sep = "-")) %>% 
+  mutate(depth_location = case_when(
+    str_detect(depth_location, "Background-Background-1200") ~ "Background-1200", 
+    str_detect(depth_location, "Background-Background-1300") ~ "Background-1300",
+    str_detect(depth_location, "Background-Background-1400") ~ "Background-1400",
+    str_detect(depth_location, "Caldera") ~ "Caldera Basin Water - 1535",
+    TRUE ~ depth_location)) %>% 
+  mutate(location_name = case_when(
+    str_detect(depth_location, "Caldera") ~ "Caldera Basin Water",
+    TRUE ~ location_name))
+
+axial_metadata_nosurface <- axial_metadata_allsamples %>% 
+  filter(!depth_category %in% c("euphotic", "oxycline"))
+
+#Remove ASVs that have less than 100 sequences total and were in two or more samples
+#ASV table has 26911 FeatureIDs
+#ASV table has 4240 FeatureIDs
+asv_morethan50 <- ASV %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  group_by(FeatureID) %>%
+  summarise(
+    total_reads = sum(SEQUENCE_COUNT),
+    prevalence = sum(SEQUENCE_COUNT > 0),
+    .groups = "drop") %>%
+  filter(total_reads >= 50, prevalence >= 2)
+
+samplestokeep_ASV <- ASV %>% 
+  filter(FeatureID %in% asv_morethan50$FeatureID) %>% 
+  pivot_longer(
+    cols = -c(FeatureID),
+    names_to = "Sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  filter(Sample %in% axial_metadata_nosurface$Sample) 
+
+table_asv <- samplestokeep_ASV %>% 
+  left_join(axial_metadata_nosurface, by = "Sample") %>% 
+  left_join(tax, by = "FeatureID") %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";") #Still 4240 ASVs
+
+
+alv <- c("Alveolata-Ellobiopsidae", "Alveolata-Perkinsea", "Alveolata-Unknown", "Alveolata-Chrompodellids", "Alveolata-Apicomplexa")
+
+tax_asv_metadata <- table_asv %>% 
+  filter(Domain == "Eukaryota") %>% 
+  filter(Phylum != "Opisthokonta") %>% 
+  mutate(
+    Phylum = case_when(
+      str_detect(Phylum, "_X$") ~ "Unknown",
+      is.na(Phylum) ~ "Unknown",
+      TRUE ~ Phylum),
+    Class = case_when(
+      str_detect(Class, "_X$") ~ "Unknown",
+      is.na(Class) ~ "Unknown",
+      TRUE ~ Class),
+    Genus = case_when(
+      str_detect(Genus, "_X") ~ "Unknown",
+      is.na(Genus) ~ "Unknown",
+      TRUE ~ Genus),
+    Order = case_when(
+      str_detect(Order, "_X") ~ "Unknown",
+      is.na(Order) ~ "Unknown",
+      TRUE ~ Order)) %>% 
+  rowwise() %>% #Taxonomy to the order level
+  mutate(
+    taxonomy_collapse = paste(
+      na.omit(c(
+        if (Phylum != "Unknown") Phylum, 
+        if (Class != "Unknown") Class,
+        if (Genus != "Unknown") Genus, 
+        if (Order != "Unknown") Order)),
+      collapse = ";")) %>% 
+   mutate(phylum_class = paste(Phylum, Class, sep = "-")) %>% 
+  mutate(taxa = case_when( #Curate taxonomy
+    Supergroup == "Eukaryota_X" ~ "Unknown Eukaryota",
+    Class == "Cercozoa" ~ "Rhizaria-Cercozoa",
+    Class == "Radiolaria" ~ "Rhizaria-Radiolaria",
+    phylum_class == "Unknown-Unknown" ~ "Unknown Eukaryota",
+    str_detect(phylum_class, "Unknown-Amoebozoa_XX|Tubulinea|Evosea") ~ "Amoebozoa",
+    phylum_class %in% alv ~ "Alveolata-Other",
+    phylum_class == "Stramenopiles-Unknown" ~ "Stramenopiles-Other",
+    str_detect(phylum_class, "Discoba|Metamonada") ~"Excavata",
+    str_detect(phylum_class, "Cryptophyta|Kathablepharida") ~"Cryptista",
+    str_detect(phylum_class, "Chlorophyta|Prasinodermophyta|Picozoa") ~"Archaeplastida",
+    str_detect(phylum_class, "Apusomonada|Breviatea|Amoebozoa") ~"Amorphea",
+    str_detect(phylum_class, "Centroplasthelida|Haptophyta") ~"Haptista",
+    str_detect(phylum_class, "Nibbleridia") ~"Provora-Nibbleridia",
+    str_detect(phylum_class, "Collodictyonidae|Mantamonadidea") ~ "CRuMS",
+    str_detect(phylum_class, "Telonemia") ~ "Telonemia",
+    TRUE ~ phylum_class))
+
+n_tax_asv_metadata <- tax_asv_metadata %>%
+  pull(FeatureID) %>%
+  n_distinct() #2911 ASVs
+
+tax_asv_metadata <- tax_asv_metadata %>% 
+  mutate(depth_location = paste(sample_type, sample_name, depth, sep = "-"))
+
+#write.csv(tax_asv_metadata, file = "tax_asv_metadata.csv", row.names = FALSE)
+```
+
+#Env Heatmap, cell counts and TOC plot
+```{r}
+
+#Don't use the table with ASV data because you will loose high temp vents
+
+env_data <- axial_metadata %>%
+  select(depth_location, depth, eukCONC, prok, pH, TOC, TDN,
+         SO4, `18S`, temp, Cl, Na, K, Mg, Ca) %>%
+  distinct() %>% 
+  rename(`Depth(m)` = depth) %>% 
+  rename('Temp(°C)' = temp) %>% 
+  rename('SO4(mM/Kg)' = SO4) %>%
+  rename('Prok(cells/ml)' = prok) %>% 
+  rename('TDN(μM)' = TDN) %>% 
+  rename('TOC(μM)' = TOC) %>% 
+  rename('Euk(cells/ml)' = eukCONC) %>%
+  rename('Ca (mM/Kg)' = Ca) %>% 
+  rename('Cl (mM/Kg)' = Cl) %>% 
+  rename('Na (mM/Kg)' = Na) %>% 
+  rename('K (mM/Kg)' = K) %>% 
+  rename('Mg (mM/Kg)' = Mg) %>% 
+  mutate(`18S` = as.character(`18S`)) %>% 
+  mutate(depth_location = reorder(depth_location, -`Depth(m)`)) #order by depth_location using the depth column
+
+variable_fill <- list(
+  "Depth" = "Depth(m)",
+  "Temp" = "Temp(°C)",
+  "Euk Cell Count" = "Euk(cells/ml)",
+  "Prok Cell Count" = "Prok(cells/ml)",
+  "pH" = "pH",
+  "TOC" = "TOC(μM)",
+  "TDN" = "TDN(μM)",
+  "SO4" = "SO4(mM/Kg)",
+  "Ca" = "Ca (mM/Kg)",
+  "Mg" = "Mg (mM/Kg)",
+  "Cl" = "Cl (mM/Kg)",
+  "Na" = "Na (mM/Kg)",
+  "K" = "K (mM/Kg)",
+  "18S" = "18S")
+
+#Set scales
+scale_fill <- list( 
+  scale_fill_gradient(low = "#ADD", high = "#191970"), # depth
+  scale_fill_gradient(low = "lightblue", high = "coral"), #temp
+  scale_fill_gradient(low = "#d8d8f0", high = "#DA70D6"), # eukCONC
+  scale_fill_gradient(low = "#d8d8f0", high = "#8B008B"), # prok
+  scale_fill_gradient(low = "#B22", high = "#8A2BE2"), # pH
+  scale_fill_gradient(low = "#efa", high = "#FF7F50"), # TOC
+  scale_fill_gradient(low = "#e38aa6", high = "#D77"), # TDN
+  scale_fill_gradient(low = "#a13356", high = "#8a1a3d"), # SO4
+  scale_fill_gradient(low = "#b54a68", high = "#962748"), #Ca
+  scale_fill_gradient(low = "#9ecae1", high = "#08519c"),  #Mg
+  scale_fill_gradient(low = "#a1d99b", high = "#006d2c"),  #Cl
+  scale_fill_gradient(low = "#bcbddc", high = "#54278f"),  #Na
+  scale_fill_gradient(low = "#fdd0a2", high = "#d94801"),  #K
+  scale_fill_manual(values = c("0" = "#F5FFFA", "1" = "#000000"))) #18S
+
+names(scale_fill) <- names(variable_fill)
+
+env_heatmap <- ggplot(env_data, aes(y = depth_location)) +
+  purrr::imap(variable_fill, \(x, y) {
+    list(
+      geom_tile(
+        aes(x = y, fill = .data[[x]]),
+        color = "black",
+        width = 0.95),
+      scale_fill[[y]],
+      ggnewscale::new_scale_fill())}) +
+  theme_void() +
+  theme(
+    axis.text.y = element_text(hjust = 1),
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title = element_blank(),
+    legend.position = "right",
+  legend.box = "vertical",
+  legend.direction = "horizontal") + 
+  scale_x_discrete(limits = names(variable_fill))
+
+ggsave("~/env_heatmap.png", plot = env_heatmap, width = 10, height = 10, dpi = 600, units = "in")
+
+
+prok_location_order <- c("Background", "Water Column", "Above Vent", "Diffuse")
+euk_location_order <- c("Background", "Water Column", "Diffuse")
+
+prok_counts <- axial_metadata %>% 
+  filter(prok >= 0) %>% 
+  filter(!sample_type %in% c("Euphotic", "Oxycline")) %>% 
+  mutate(sample_type = factor(sample_type,
+                         levels = prok_location_order))
+
+#Cell counts
+prok_count <- ggplot(prok_counts, aes(x = sample_type, y = prok, color = location_name)) +
+  geom_jitter(size = 3) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod",
+    "Marker 113" = "violet",
+    "Marker 33" = "purple")) +
+  scale_y_log10() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  facet_grid(cols=vars(sample_type), space = "free", scales = "free") +
+  labs(x = "", y = "Cells/ml (log)", color = NULL) +
+  ggtitle("Prokaryotic Cell Abundance") + theme(legend.position = "none")
+
+#Cell counts
+euk_count <- axial_euk_cell_counts %>% 
+  filter(!`Sample Type` %in% c("Euphotic", "Oxycline")) %>% 
+  filter(!`Vent Field` %in% c("Coquille", "N3", "Bag  City")) %>% 
+  mutate(`Sample Type` = factor(`Sample Type`,
+                         levels = euk_location_order))
+  
+euk_plot <- ggplot(euk_count, aes(x = `Sample Type`,
+         y = CELLS_PER_ML_total,
+        color = `Vent Field`)) +
+  geom_jitter(size = 3) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod",
+    "Marker 113" = "violet",
+    "Marker 33" = "purple"
+  )) +
+  scale_y_log10() +
+  facet_grid(cols = vars(`Sample Type`), space = "free", scales = "free") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(x = "", y = NULL, color = NULL) +
+  ggtitle("Eukaryotic Cell Abundance")
+
+#library(patchwork)
+
+cell_count_plot <- prok_count + euk_plot
+
+ggsave("~/cell_count_plot.png", plot = cell_count_plot, width = 10, height = 5, dpi = 600, units = "in")
+
+#TOC plot
+unique(TOC_data$location_name)
+
+TOC_data <- axial_metadata %>% 
+  filter(!is.na(TOC)) 
+
+TOC_plot <- ggplot(TOC_data, aes(x = TOC, y = sample_type, color = location_name, shape = sample_type)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = c(
+    "Background" = 15,
+    "Diffuse" = 17, 
+    "Water Column" = 16,
+    "Above Vent" = 16)) +
+  scale_color_manual(values = c(
+    "ASHES" = "firebrick2",
+    "International District" = "darkcyan",
+    "Background" = "goldenrod",
+    "Marker 113" = "violet",
+    "Marker 33" = "purple")) +
+  theme_classic() + theme(
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(color = "black"),
+    strip.background = element_blank(),
+    axis.title = element_text(color = "black", size = 9),
+    axis.text.y = element_text(color = "black", vjust = 0.5, hjust = 0, size = 9),
+    panel.grid.major = element_line(color = "grey70", linetype = "dashed")) +
+  guides(shape = "none") +
+  labs(x = "TOC (µM)", y = "") 
+
+ggsave("~/TOC_plot.png", plot = TOC_plot, width = 10, height = 6, dpi = 600, units = "in")
+
+```
+#Alpha diversity
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+#BiocManager::install("phyloseq")
+
+#library(phyloseq)
+
+#Using axial_metadata_allsamples make a new DF and identify replicates
+
+axial_allsamples_wReps <- axial_metadata_allsamples %>% 
+  mutate(DepthCat_Location = paste(dive_ctd, filter_type, sample_name, location_name, depth_category, depth, sep = "-"))
+
+#write.csv(axial_allsamples_wReps, file = "axial_allsamples_wReps.csv", row.names = FALSE)
+
+#Re-upload file and combine replicate label to make unique sample identifier
+axial_allsamples_wReps <- read_csv("R/Axial2023/axial_allsamples_wReps.csv") 
+
+axial_allsamples_wReps <- axial_allsamples_wReps %>% 
+  mutate(DepthCat_wReps = paste(DepthCat_Location, Rep, sep = "-"))
+
+#Add DeptCat_wRepsn from metadata to ASV table
+alpha_ASV <- ASV %>% 
+  filter(FeatureID %in% samplestokeep_ASV$FeatureID) %>% 
+  pivot_longer(cols = -FeatureID,
+               names_to = "Sample", 
+               values_to = "SEQUENCE_COUNT") %>% 
+  filter(Sample %in% axial_allsamples_wReps$Sample) %>% 
+  left_join(axial_allsamples_wReps %>% select(Sample, DepthCat_wReps), by = "Sample")
+
+axial_allsamples_wReps <- axial_allsamples_wReps %>% column_to_rownames("DepthCat_wReps")
+
+ASV_wide <- alpha_ASV %>%
+  select(FeatureID, DepthCat_wReps, SEQUENCE_COUNT) %>%
+  pivot_wider(
+    names_from = DepthCat_wReps,
+    values_from = SEQUENCE_COUNT,
+    values_fill = 0)
+
+#Phyloseq objects need to have row.names. Define row names from ASV column.
+#Then transform into matrices. Metadata can be left as DF. 
+asv_mat <- ASV_wide %>%  tibble::column_to_rownames("FeatureID") %>% as.matrix()
+tax_mat <- tax %>% tibble::column_to_rownames("FeatureID") %>% as.matrix()
+
+#Transform into phyloseq objects
+ASV_phy = otu_table(asv_mat, taxa_are_rows = TRUE)
+tax_phy = tax_table(tax_mat)
+samples = sample_data(axial_allsamples_wReps)
+
+#Final axial phyloseq object
+Axial_phy <- phyloseq(ASV_phy, tax_phy, samples)
+
+#Calculate alpha diversity
+axial_alpha_div <- estimate_richness(
+  Axial_phy,
+  measures = c("Shannon", "Simpson", "Chao1"))
+
+axial_alpha_div$SAMPLE <- sample_names(Axial_phy)
+
+axial_alpha_div <- axial_alpha_div %>% 
+  rownames_to_column("sample_dont_use") %>% 
+  select(-sample_dont_use) %>% 
+  separate(SAMPLE, into = c("Dive", "Filter", "DEPTH_CATEGORY", "Location_Name", "Depth", "Rep"),  
+    sep = "-", 
+    remove = TRUE)
+
+sample_order <- c("Near Surface", "Background", "Caldera Basin Water", "Plume", "Above Vent", "Diffuse")
+
+axial_alpha_div <- axial_alpha_div %>% 
+  mutate(Depth = case_when(
+    DEPTH_CATEGORY == "Caldera Basin Water" ~ "Caldera Basin Water",
+    TRUE ~ Depth)) %>% 
+  mutate(sample_type = case_when(
+    Depth == "diffuse" ~ "Diffuse",
+    Depth == "background" ~ "Background",
+    Depth == "above vent" ~ "Above Vent",
+    Depth == "euphotic" ~ "Near Surface",
+    Depth == "oxycline" ~ "Near Surface",
+    str_detect(Depth, "plume") ~ "Plume",
+    str_detect(Depth, "30m") ~ "Plume",
+    TRUE ~ Depth)) %>% 
+  mutate(sample_type = factor(sample_type, levels = sample_order))
+
+unique(axial_alpha_div$sample_type)
+
+#axial_alpha_div_noreps <- axial_alpha_div %>% 
+  mutate(SAMPLE = paste(Dive, Filter, DEPTH_CATEGORY, Location_Name, Depth, sep = "-")) %>%  
+  group_by(SAMPLE) %>% 
+  summarise(
+    Shannon_mean = mean(Shannon, na.rm = TRUE),
+    Simpson_mean = mean(Simpson, na.rm = TRUE),
+    n_reps = n(),
+    .groups = "drop")
+
+#Shannon  
+shannon <- ggplot(
+  axial_alpha_div,
+  aes(x = sample_type, y = Shannon, color = Location_Name)) +
+  geom_boxplot(aes(outlier_shape = NA)) +
+  geom_jitter(width = 0.15, alpha = 0.7) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "Marker 33" = "purple",
+    "Marker 113" = "blue",
+    "Caldera Basin Water" = "green",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "none") +
+  labs(title = "Shannon")
+
+simpson <- ggplot(
+  axial_alpha_div,
+  aes(x = sample_type, y = Simpson, color = Location_Name)) +
+  geom_boxplot(aes(outlier_shape = NA)) +
+  geom_jitter(width = 0.15, alpha = 0.7) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "Marker 33" = "purple",
+    "Marker 113" = "blue",
+    "Caldera Basin Water" = "green",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title = element_blank()) +
+  labs(title = "Simpson")
+
+chao <- ggplot(
+  axial_alpha_div,
+  aes(x = sample_type, y = se.chao1, color = Location_Name)) +
+  geom_boxplot(aes(outlier_shape = NA)) +
+  geom_jitter(width = 0.15, alpha = 0.7) +
+  scale_color_manual(name = "Location", values = c(
+    "ASHES" = "firebrick2",
+    "Marker 33" = "purple",
+    "Marker 113" = "blue",
+    "Caldera Basin Water" = "green",
+    "International District" = "darkcyan",
+    "Background" = "darkgoldenrod")) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank(),
+    legend.position = "none") +
+  labs(title = "Chao1")
+
+#library(patchwork)
+
+alpha_patch <- shannon/simpson/chao
+alpha_patch
+
+ggsave("~/alpha_patch.png", plot = alpha_patch, width = 8, height = 10, units = "in")
+```
+
+#NMDS and PERMANOVA
+```{r}
+#NMDS without collapsed replicates
+
+#Compute Bray-Curtis and run NMDS
+
+NMDS_input <- tax_asv_metadata %>% 
+  filter(!depth_category %in% c("Euphotic", "Oxycline")) %>%
+  select(FeatureID, Sample, SEQUENCE_COUNT) %>% 
+  pivot_wider(names_from = FeatureID,
+              values_from = SEQUENCE_COUNT,
+              values_fill = 0) %>% 
+  column_to_rownames("Sample") %>% 
+  as.matrix() 
+
+#Compute Bray-Curtis and run NMDS
+set.seed(123)
+axial_nmds <- metaMDS(NMDS_input, distance = "bray") ##Stress=0.14
+
+# Extract NMDS coordinates for samples
+nmds_scores <- as.data.frame(scores(axial_nmds, display = "sites"))
+
+# Add Sample names as a column
+nmds_scores <- scores(axial_nmds, display = "sites") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample")
+
+NMDS_metadata <- tax_asv_metadata %>% 
+  left_join(nmds_scores, by = "Sample") %>% 
+  mutate(sample_type = case_when(
+    sample_name == "Caldera Basin Water" ~ "Caldera Basin Water",
+    TRUE ~ sample_type)) %>% 
+  filter(!sample_type %in% c("Euphotic", "Oxycline"))
+
+unique(NMDS_metadata$sample_type)
+#Plot NMDS
+#install.packages("ggnewscale")
+#library(ggnewscale)
+
+NMDS_plot <- ggplot(NMDS_metadata, aes(x = NMDS1, y = NMDS2)) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+
+  # WATER COLUMN FIRST
+  geom_point(
+    data = filter(NMDS_metadata, sample_type == "Water Column"),
+    aes(shape = sample_type,
+        fill = depth),
+    size = 3) +
+
+  scale_fill_gradient(
+    high = "darkblue",
+    low = "lightblue",
+    name = "Water Column Depth (m)",
+    guide = guide_colorbar(reverse = TRUE)) +
+
+  ggnewscale::new_scale_fill() +
+
+  # NON-WATER COLUMN SECOND
+geom_point(
+    data = filter(NMDS_metadata, sample_type != "Water Column"),
+    aes(shape = sample_type,
+        fill = sample_name),
+    size = 3) +
+
+  scale_fill_manual(
+    name = "Sample Location",
+    values = c(
+      "Anemone" = "lightgoldenrod",
+      "Gollum" = "orange",
+      "ASHES" = "firebrick2",
+      "International District" = "darkcyan",
+      "Diva" = "darkcyan",
+      "Background" = "darkblue",
+      "Caldera Basin Water" = "darkblue",
+      "Marker 33" = "mediumpurple",
+      "Marker 113" = "mistyrose3")) +
+
+  scale_shape_manual(name = "Sample Type",
+    values = c(
+    "Above Vent" = 25,
+    "Diffuse" = 24,
+    "Water Column" = 21,
+    "Background" = 22,
+    "Caldera Basin Water" = 23)) +
+  guides(fill = guide_legend(override.aes = list(shape = 21, stroke = 0.5)))
+
+
+ggsave("~/NMDS_plot.png", plot = NMDS_plot, width = 6, height = 6, dpi = 600, units = "in")
+
+#Run PERMANOVA. 
+#1. ASV table where rows = samples and columns = ASVs. This is NMDS_input
+#2. Metadata table where row = sample. This looks like NMDS_metadata. Calculate BC. 
+
+adonis_ASV <- NMDS_input %>% 
+  as.data.frame()
+
+# Metadata with Sample as rownames
+adonis_metadata <- axial_metadata %>%
+  filter(Sample %in% samplestokeep_ASV$Sample) %>% 
+  column_to_rownames("Sample")
+
+# Ensure identical order 
+adonis_ASV <- adonis_ASV[rownames(adonis_metadata), ]
+
+# Check alignment
+all(rownames(adonis_ASV) == rownames(adonis_metadata)) #TRUE
+
+setdiff(rownames(adonis_ASV), rownames(adonis_metadata))
+setdiff(rownames(adonis_metadata), rownames(adonis_ASV))
+
+# Bray-Curtis distance
+bray <- vegdist(adonis_ASV, method = "bray")
+
+# PERMANOVA
+adonis_results <- adonis2(
+  bray ~ sample_type,
+  data = adonis_metadata,
+  permutations = 9999)
+
+```
+
+
+#Jaccard distance decay and dendogram
+```{r}
+library("phyloseq")
+
+#Format ASV and tax table
+asv_matrix <- asv_wide %>% 
+  as.data.frame() %>% 
+  rownames_to_column("depth_location") %>% 
+  pivot_longer(cols = -depth_location,
+               names_to = "FeatureID",
+               values_to = "mean_seq") %>% 
+  separate(depth_location,
+    into = c("location","site","depth"),  
+    sep = "-") %>% 
+  mutate(SampleID = paste(location, site, depth, sep = "-")) %>% 
+  mutate(SampleID = case_when(
+  str_detect(SampleID, "Background-1200") ~ "Background-1200",
+   str_detect(SampleID, "Background-1300") ~ "Background-1300",
+   str_detect(SampleID, "Background-1400") ~ "Background-1400",
+  str_detect(SampleID, "Caldera") ~ "Caldera Basin Water-1535",
+    TRUE ~ SampleID)) %>% 
+  select(-location, -site, -depth) %>% 
+  group_by(FeatureID, SampleID) %>%  
+  summarise(seq_sum = sum(mean_seq)) %>% 
+  pivot_wider(names_from = SampleID, 
+              values_from = seq_sum, values_fill = 0) %>% 
+  column_to_rownames("FeatureID") %>% 
+  as.matrix()
+
+tax_matrix <- tax %>% 
+  separate(Taxon, into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>% select(-Consensus) %>% column_to_rownames("FeatureID") %>% 
+  as.matrix()
+
+tax_table <- tax_table(tax_matrix)
+ASV_table <- otu_table(asv_matrix, taxa_are_rows = TRUE)
+
+physeq_object <- merge_phyloseq(ASV_table, tax_table, axial_metadata)
+
+dist <- phyloseq::distance(physeq_object, method = "jaccard")
+
+rownames(as.data.frame(as.matrix(dist)))
+
+dist <- as.data.frame(as.matrix(dist))
+
+dist_scores_df <- dist %>% 
+  rownames_to_column(var = "SampleA") %>% 
+  pivot_longer(cols = -SampleA, 
+               names_to = "SampleB")
+
+metadata <- axial_metadata %>% 
+  filter(sample_type != "High Temp Vent") %>% 
+  select(depth_location, lat, long, depth) %>% distinct() 
+  
+
+dist_df2 <- dist_scores_df %>%
+  
+  left_join(metadata %>% 
+              select(depth_location, lat, long, depth),
+            by = c("SampleA" = "depth_location")) %>%
+  rename(latA = lat,
+         longA = long,
+         depthA = depth) %>%
+  
+  left_join(metadata %>% 
+              select(depth_location, lat, long, depth),
+            by = c("SampleB" = "depth_location")) %>%
+  rename(latB = lat,
+         longB = long,
+         depthB = depth)
+
+#install.packages("geosphere")
+#library(geosphere)
+
+dist_df2 <- dist_df2 %>%
+  mutate(
+    horizontal_distance = distHaversine(
+      cbind(longA, latA),
+      cbind(longB, latB)),
+    z_dist = abs(depthA - depthB),
+    distance_3d = sqrt(horizontal_distance^2 + z_dist^2)) %>% 
+  mutate(samples_combined = paste(SampleA, SampleB, sep = "-")) %>%
+  mutate(bin = cut(distance_3d, breaks = 10)) 
+
+unique(dist_df2$distance_3d)
+
+
+distance_decay_GRC <- ggplot(dist_df2, aes(x = distance_3d, y = value)) +
+  geom_jitter() +
+  theme_linedraw() +
+  scale_y_continuous(limits = c(0.4,1)) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(color = "black", face = "bold", size = 12),
+        axis.text = element_text(color = "black", face = "bold", size = 12),
+        axis.title = element_text(color = "black", face = "bold", size = 12)) +
+  labs(y = "Jaccard Dissimilarity", x = "Euclidean Distance (m)") #+
+  geom_text(aes(label = samples_combined))
+  
+ggsave("~/distance_decay_GRC.png", plot = distance_decay_GRC, width = 6, height = 6, dpi = 600, units = "in")
+
+#install.packages("ggdendro")
+library(ggdendro)
+
+dist_plot <- phyloseq::distance(
+  physeq_object,
+  method = "jaccard",
+  binary = TRUE)
+
+hc <- hclust(dist_plot, method = "average")
+
+#plot(hc)
+
+cluster_jacc <- hclust(dist_plot, method = "average")
+
+dendro_plot_df <- ggdendro::dendro_data(as.dendrogram(cluster_jacc), type = "rectangle")
+label_dendro_order <- as.character(dendro_plot_df$labels$label)
+
+ggdendro_GRC <- ggplot(segment(dendro_plot_df)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() + 
+  scale_y_reverse(expand = c(0.2, 0.5), breaks = c(0, 0.2, 0.4, 0.6, 0.8)) + 
+  geom_text(
+  aes(x = x, y = y, label = label, angle = 0, hjust = 0),
+  data = label(dendro_plot_df),
+  size = 5) + 
+  theme_dendro() + 
+  labs(y = "Jaccard Dissimilarity") + 
+theme(
+  axis.title.x = element_text(size = 20, color = "black"),
+  axis.text.x = element_text(color = "black", size = 20),
+  axis.text.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(color = "#252525"),
+  axis.ticks.x = element_line())
+
+
+
+ggsave("~/ggdendro_GRC.png", plot = ggdendro_GRC, width = 12, height = 8, dpi = 600, units = "in")
+head(label_dendro_order)
+
+```
+
+#Stacked bar plot in dendogram order
+```{r}
+#Keep ASVs that only have 50 or more sequences and are found in two or more samples
+asv_keep <- ASV %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  group_by(FeatureID) %>%
+  summarise(
+    total_reads = sum(SEQUENCE_COUNT),
+    prevalence = sum(SEQUENCE_COUNT > 0),
+    .groups = "drop") %>%
+  filter(total_reads >= 50, prevalence >= 2)
+
+samplestokeep_ASV <- ASV %>% 
+  filter(FeatureID %in% asv_keep$FeatureID) %>% 
+  pivot_longer(
+    cols = -c(FeatureID),
+    names_to = "Sample",
+    values_to = "SEQUENCE_COUNT") %>%
+  filter(Sample %in% axial_metadata$Sample) 
+
+table_asv <-  samplestokeep_ASV %>% 
+  left_join(axial_metadata, by = "Sample") %>% 
+  left_join(tax, by = "FeatureID") %>% 
+  separate(
+    col = Taxon,
+    into = c("Domain", "Supergroup", "Phylum", "Class", "Order", "Genus", "Species"),
+    sep = ";")
+
+alv <- c("Alveolata-Ellobiopsidae", "Alveolata-Perkinsea", "Alveolata-Unknown", "Alveolata-Chrompodellids", "Alveolata-Apicomplexa")
+
+#Curate taxonomy
+#library(dplyr)
+#library(stringr)
+#library(purrr)
+
+collapsed_reps_ASV <- tax_asv_metadata %>% 
+  filter(depth_category != "euphotic") %>% 
+  filter(depth_category!= "oxycline") %>% 
+  mutate(depth_location = case_when(
+  str_detect(depth_location, "Background-1200") ~ "Background-1200",
+   str_detect(depth_location, "Background-1300") ~ "Background-1300",
+   str_detect(depth_location, "Background-1400") ~ "Background-1400",
+  str_detect(depth_location, "Caldera") ~ "Caldera Basin Water-1535",
+    TRUE ~ depth_location)) %>% 
+  group_by(taxa, depth_location) %>% 
+  summarise(
+    seq_sum = sum(SEQUENCE_COUNT, na.rm = TRUE),
+    .groups = "drop") %>% 
+  group_by(depth_location) %>% 
+   mutate(sample_seq_total = sum(seq_sum),
+         taxa_relAbun = seq_sum / sample_seq_total) %>% 
+  ungroup() 
+
+collapsed_reps_ASV <- collapsed_reps_ASV %>% mutate(
+    depth_location = factor(depth_location,
+                         levels = label_dendro_order))
+  
+
+taxa <- c("Alveolata-Dinoflagellata" = "cornflowerblue","Rhizaria-Radiolaria" = 
+            "coral4","Alveolata-Ciliophora" = "coral", 
+          "Stramenopiles-Gyrista" = "chocolate","Rhizaria-Cercozoa" = "cadetblue","Stramenopiles-Bigyra" = "aquamarine","Archaeplastida" = "firebrick4", 
+          "Discosea-Unknown" = "plum4","Stramenopiles-Other" = "lightsalmon", "Amorphea" = "darkolivegreen3","Haptista" = "gold","Amoebozoa" = "lightgoldenrod",
+          "Unknown Eukaryota" = "mistyrose","Telonemia" = "rosybrown","Alveolata-Other" = "peachpuff4","Cryptista" = "coral3","CRuMS" = "darkcyan",
+          "Excavata" = "orchid","Provora-Nibbleridia" = "powderblue")
+
+
+GRC_stackedbar <- ggplot(collapsed_reps_ASV, aes(y = depth_location, x = taxa_relAbun, fill = taxa)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = taxa) +
+  theme_minimal(base_size = 12) +
+  theme(
+    # Text
+    axis.text.x = element_text(face = "bold", color = "black", size = 14),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title = element_text(color = "black", face = "bold"),
+    strip.text = element_text(color = "black", face = "bold", size = 12),
+    legend.text = element_text(color = "black", size = 14),
+    
+    # Backgrounds
+     plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray", color = NA),
+    
+    # Gridlines
+    panel.grid = element_blank(),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_blank()) +
+  labs(
+    title = "",
+    x = "",
+    y = "") +
+  theme(
+  legend.text = element_text(size = 16)) +
+  guides(fill = guide_legend(title = NULL))
+
+ggsave("~/GRC_stackedbar.png", plot = GRC_stackedbar, width = 6, height = 8, dpi = 600, units = "in")
+
+library(patchwork)
+
+combined_plot <- ggdendro_GRC + GRC_stackedbar +
+  plot_layout(widths = c(12, 3))
+
+ggsave("~/combined_plot.png", plot = combined_plot, width = 12, height = 8, dpi = 600, units = "in")
+```
+
+#Chord plot
+Chord diagram shows the flow between a set of entities (nodes)
+```{r}
+#install.packages("circlize")
+#library(circlize)
+#library(RColorBrewer)
+
+#Format ASV table
+chord_df <- tax_asv_metadata %>%
+  group_by(sample_type, taxonomy_collapse) %>%
+  summarise(abundance_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>%
+  filter(
+    !is.na(sample_type),
+    !is.na(taxonomy_collapse),
+    abundance_avg > 0) %>%
+  mutate(
+    sample_type = as.character(sample_type),
+    taxonomy_collapse = as.character(taxonomy_collapse))
+
+top_taxa <- chord_df %>%
+  group_by(taxonomy_collapse) %>%
+  summarise(total = sum(abundance_avg), .groups = "drop") %>%
+  slice_max(total, n = 45) %>%
+  pull(taxonomy_collapse)
+
+chord_df_top45 <- chord_df %>%
+  filter(taxonomy_collapse %in% top_taxa)
+
+taxa_lookup <- data.frame(
+  taxonomy_collapse = sort(unique(chord_df_top45$taxonomy_collapse))
+) %>%
+  mutate(tax_id = as.character(row_number()))
+
+chord_df_plot <- chord_df_top45 %>%
+  left_join(taxa_lookup, by = "taxonomy_collapse")
+
+tax_colors <- setNames(
+  colorRampPalette(brewer.pal(12, "Set3"))(nrow(taxa_lookup)),
+  taxa_lookup$tax_id)
+
+#Build alist of every unique category that will appear in the chord diagram
+all_sectors <- unique(c(
+  chord_df_top45$sample_type,
+  chord_df_top45$taxonomy_collapse))
+
+sample_colors <- setNames(
+  rep("grey80", length(unique(chord_df_plot$sample_type))),
+  unique(chord_df_plot$sample_type))
+
+grid.col <- c(sample_colors, tax_colors)
+
+plot_df <- chord_df_plot %>%
+  transmute(
+    sample_type,
+    taxonomy = tax_id,
+    value = abundance_avg)
+#Run below as one chunk or it wont work
+
+svg("chord_diagram.svg")
+
+circos.clear()
+
+chordDiagram(
+  plot_df,
+  grid.col = grid.col,
+  col = tax_colors[plot_df$taxonomy],
+  transparency = 0.4)
+
+dev.off() 
+##
+
+legend_df <- taxa_lookup %>%
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_id = factor(tax_id, levels = tax_id)) %>%
+  mutate(color = tax_colors[tax_id]) %>% 
+  mutate(tax_wNumber = paste(tax_id, taxonomy_collapse, sep = "-")) %>% 
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_wNumber = factor(tax_wNumber, levels = tax_wNumber))
+  
+
+chord_legend <- ggplot(legend_df, aes(x = tax_wNumber, y = 1, fill = tax_id)) +
+  geom_tile() +
+  scale_fill_manual(name = "Taxonomy", values = tax_colors, breaks = legend_df$tax_id) +
+  theme_void() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggsave("chord_legend.png", chord_legend, height = 8, width = 10, dpi = 600)
+
+```
+
+#Chord plot at the species level for strams (Bigyra, gyrista), rhizaria (radiolaria), haptista
+```{r}
+#install.packages("circlize")
+library(circlize)
+library(RColorBrewer)
+
+#Filter for taxa of interest
+
+SRH <- tax_asv_metadata %>% 
+  filter(taxa %in% c("Rhizaria-Radiolaria", "Stramenopiles-Bigyra", "Stramenopiles-Gyrista", "Haptista")) %>% 
+  mutate(Species = case_when(
+  (is.na(Genus) | Genus == "Unknown") & is.na(Species) ~ "Unknown",
+  !is.na(Genus) & Genus != "Unknown" & is.na(Species) ~ paste0(Genus, "-Unknown"),
+   str_detect(Species, "_X") ~ str_replace(Species, "_X+$", "-Unknown"),
+  TRUE ~ Species)) %>% 
+  mutate(taxa_species = paste(taxa, Species, sep = "-"))
+
+unique(SRH$taxa_species)
+
+#Format ASV table
+chord_df_SRH <- SRH %>%
+  group_by(sample_type, taxa_species) %>%
+  summarise(abundance_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>%
+  filter(abundance_avg > 0) %>% 
+  mutate(
+    sample_type = as.character(sample_type),
+    taxa_species = as.character(taxa_species)) %>% 
+  ungroup()
+
+#Pull out top taxa for each sample category
+top20_abovevent <- chord_df_SRH %>% 
+  filter(sample_type == "Above Vent") %>% 
+  group_by(sample_type, taxa_species) %>%
+  summarise(
+    overall_abundance = mean(abundance_avg),
+    .groups = "drop") %>%
+  slice_max(
+    overall_abundance,
+    n = 20)
+
+top20_diffuse <- chord_df_SRH %>% 
+  filter(sample_type == "Diffuse") %>% 
+  group_by(sample_type, taxa_species) %>%
+  summarise(
+    overall_abundance = mean(abundance_avg),
+    .groups = "drop") %>%
+  slice_max(
+    overall_abundance,
+    n = 20)
+
+top20_background <- chord_df_SRH %>% 
+  filter(sample_type == "Background") %>% 
+  group_by(sample_type, taxa_species) %>%
+  summarise(
+    overall_abundance = mean(abundance_avg),
+    .groups = "drop") %>%
+  slice_max(
+    overall_abundance,
+    n = 20)
+
+top20_watercolumn <- chord_df_SRH %>% 
+  filter(sample_type == "Water Column") %>% 
+  group_by(sample_type, taxa_species) %>%
+  summarise(
+    overall_abundance = mean(abundance_avg),
+    .groups = "drop") %>%
+  slice_max(
+    overall_abundance,
+    n = 20)
+
+top20_CBW <- chord_df_SRH %>% 
+  filter(sample_type == "Caldera Basin Water") %>% 
+  group_by(sample_type, taxa_species) %>%
+  summarise(
+    overall_abundance = mean(abundance_avg),
+    .groups = "drop") %>%
+  slice_max(
+    overall_abundance,
+    n = 20)
+
+top20_all <- bind_rows(
+  top20_abovevent,
+  top20_diffuse,
+  top20_background,
+  top20_watercolumn,
+  top20_CBW)
+
+n_distinct(top20_all$taxa_species) #Went from 121 total to 42
+
+taxa_lookup_top20_all <- data.frame(
+    taxa_species = sort(unique(top20_all$taxa_species))) %>%
+    mutate(tax_id = as.character(row_number()))
+
+chord_df_plot <- top20_all %>%
+    left_join(taxa_lookup_top20_all, by = "taxa_species")
+
+tax_colors <- setNames(
+    colorRampPalette(brewer.pal(12,"Set3"))(nrow(taxa_lookup_top20_all)),
+    taxa_lookup_top20_all$tax_id)
+
+#Build alist of every unique category that will appear in the chord diagram
+sample_colors <- setNames(
+  rep("grey80", length(unique(top20_all$sample_type))),
+  unique(top20_all$sample_type))
+
+grid.col <- c(sample_colors, tax_colors)
+
+plot_df <- chord_df_plot %>%
+    transmute(
+        sample_type,
+        taxonomy = tax_id,
+        value = overall_abundance)
+
+n_distinct(top30_all$taxa_species)
+
+#Run below as one chunk or it wont work
+svg("chord_diagram_SRH.svg")
+
+circos.clear()
+
+chordDiagram(
+  plot_df,
+  grid.col = grid.col,
+  col = tax_colors[plot_df$taxonomy],
+  transparency = 0.4)
+
+dev.off() 
+##
+
+legend_df <- taxa_lookup_top20_all %>%
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_id = factor(tax_id, levels = tax_id)) %>%
+  mutate(color = tax_colors[tax_id]) %>% 
+  mutate(tax_wNumber = paste(tax_id, taxa_species, sep = "-")) %>% 
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_wNumber = factor(tax_wNumber, levels = tax_wNumber))
+  
+
+chord_legend_SRH <- ggplot(legend_df, aes(x = tax_wNumber, y = 1, fill = tax_id)) +
+  geom_tile() +
+  scale_fill_manual(name = "Taxonomy", values = tax_colors, breaks = legend_df$tax_id) +
+  theme_void() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggsave("chord_legend_SRH.png", chord_legend_SRH, height = 8, width = 10, dpi = 600)
+```
+
+#chord plot for strams, haptista and radiolaria at the order level 
+```{r}
+SRH_order <- tax_asv_metadata %>% 
+  filter(taxa %in% c("Rhizaria-Radiolaria", "Stramenopiles-Bigyra", "Stramenopiles-Gyrista", "Haptista")) %>% 
+  mutate(taxa_order = paste(taxa, Order, sep = "-"))
+
+chord_order_SRH <- SRH_order %>%
+  group_by(sample_type, taxa_order) %>%
+  summarise(abundance_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>%
+  filter(abundance_avg > 0) %>% 
+  mutate(
+    sample_type = as.character(sample_type),
+    taxa_order = as.character(taxa_order)) %>% 
+  ungroup()
+
+n_distinct(chord_df_SRH$taxa_order) #30 unique IDs
+
+diffuse <- chord_order_SRH %>% 
+  filter(sample_type == "Diffuse") 
+
+sum(diffuse$abundance_avg, na.rm = TRUE) #72211 sequences for diffuse
+
+sum()
+
+taxa_lookup_order <- data.frame(
+    taxa_order = sort(unique(chord_order_SRH$taxa_order))) %>%
+    mutate(tax_id = as.character(row_number()))
+
+chord_order_plot <- chord_order_SRH %>%
+    left_join(taxa_lookup_order, by = "taxa_order")
+
+tax_colors <- setNames(
+    colorRampPalette(brewer.pal(12,"Set3"))(nrow(taxa_lookup_order)),
+    taxa_lookup_order$tax_id)
+
+#Build alist of every unique category that will appear in the chord diagram
+sample_colors <- setNames(
+  rep("grey80", length(unique(chord_order_plot$sample_type))),
+  unique(chord_order_plot$sample_type))
+
+grid.col <- c(sample_colors, tax_colors)
+
+plot_order_df <- chord_order_plot %>%
+    transmute(
+        sample_type,
+        taxonomy = tax_id,
+        value = abundance_avg)
+
+#Run below as one chunk or it wont work
+svg("chord_SRH_order.svg")
+
+circos.clear()
+
+chordDiagram(
+  plot_df,
+  grid.col = grid.col,
+  col = tax_colors[plot_order_df$taxonomy],
+  transparency = 0.4)
+
+dev.off() 
+##
+
+legend_order <- taxa_lookup_order %>%
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_id = factor(tax_id, levels = tax_id)) %>%
+  mutate(color = tax_colors[tax_id]) %>% 
+  mutate(tax_wNumber = paste(tax_id, taxa_order, sep = "-")) %>% 
+  arrange(as.numeric(tax_id)) %>%
+  mutate(tax_wNumber = factor(tax_wNumber, levels = tax_wNumber))
+  
+
+chord_legend_order <- ggplot(legend_order, aes(x = tax_wNumber, y = 1, fill = tax_id)) +
+  geom_tile() +
+  scale_fill_manual(name = "Taxonomy", values = tax_colors, breaks = legend_df$tax_id) +
+  theme_void() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggsave("chord_legend_order.png", chord_legend_order, height = 8, width = 10, dpi = 600)
+
+```
+
+
+#RDA
+```{r}
+#Generate a matrix of numerical data
+numerical <- axial_metadata %>%
+  select(depth_location, depth, temp, sample_name, prok) %>% 
+  group_by(depth_location) %>%
+  summarise(
+    depth = mean(depth),
+    prok = mean(prok),
+    temp = mean(temp),
+    .groups = "drop"
+  )  %>% 
+  filter(!is.na(prok))
+
+#Make a categorical data table 
+categorical <- axial_metadata %>% 
+  select(sample_type, location_name, depth_category, 
+         sample_name, depth_location) %>% filter(depth_location %in% numerical$depth_location) %>% 
+  distinct()
+  
+numerical <- numerical %>% column_to_rownames("depth_location")
+
+standardize_numerical <- decostand(numerical, MARGIN = 2, method = "standardize")
+
+# Combine normalized metadata with categorical data
+standardize_numerical <- standardize_numerical %>% 
+  rownames_to_column("depth_location")
+
+metadata_normalized <- categorical %>% 
+  right_join(as.data.frame(standardize_numerical)) %>% 
+  column_to_rownames(var = "depth_location")
+  
+seq_wide <- tax_asv_metadata %>% 
+  select(FeatureID, SEQUENCE_COUNT, depth_location) %>% 
+  group_by(depth_location, FeatureID) %>% 
+  summarise(seq_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>% 
+  pivot_wider(names_from = FeatureID,
+              values_from = seq_avg,
+              values_fill = 0) %>% 
+  column_to_rownames("depth_location") %>%  as.matrix()
+
+
+clr_asv_matrix <- data.frame(compositions::clr(seq_wide))
+
+asv_list <- colnames(seq_wide)
+
+# asv_list
+meta_list <- rownames(metadata_normalized)
+clr_list <- rownames(clr_asv_matrix)
+setdiff(meta_list, clr_list)
+
+shared_samples <- intersect(
+  rownames(clr_asv_matrix),
+  rownames(metadata_normalized))
+
+clr_asv_matrix <- clr_asv_matrix[shared_samples, ]
+metadata_normalized <- metadata_normalized[shared_samples, ]
+
+all(rownames(clr_asv_matrix) == rownames(metadata_normalized))
+#Large f-ratio means there is a lot of between group variance compared to within-group variance (independent variables have a greater influence on depdendent variables). Smaller f-ratios indicate the groups are similar to one another. 
+
+rda_clr <- rda(clr_asv_matrix ~ ., data = metadata_normalized)
+
+summary(rda_clr)
+
+anova(rda_clr, by = "term", permutations = 9999)
+
+```
+
+#RDA without vent samples - didnt work?
+```{r}
+#Generate a matrix of numerical data
+numerical_novent <- axial_metadata %>%
+  select(sample_type, depth_location, depth, temp, sample_name, prok) %>% 
+  filter(!sample_type %in% c("Euphotic", "Oxycline", "High Temp Vent", "Diffuse")) %>% 
+  select(-sample_type) %>% 
+  group_by(depth_location) %>%
+  summarise(
+    depth = mean(depth),
+    prok = mean(prok),
+    temp = mean(temp),
+    .groups = "drop"
+  )  %>% 
+  filter(!is.na(prok))
+
+
+#Make a categorical data table 
+categorical_novent <- axial_metadata %>% 
+  select(location_name, depth_category, 
+         sample_name, depth_location) %>% filter(depth_location %in% numerical_novent$depth_location) %>% 
+  distinct()
+  
+numerical_novent <- numerical_novent %>% column_to_rownames("depth_location")
+
+standardize_numerical_novent <- decostand(numerical_novent, MARGIN = 2, method = "standardize")
+
+# Combine normalized metadata with categorical data
+standardize_numerical_novent <- standardize_numerical_novent %>% 
+  rownames_to_column("depth_location")
+
+metadata_normalized_novent <- categorical_novent %>% 
+  right_join(as.data.frame(standardize_numerical_novent)) %>% 
+  column_to_rownames(var = "depth_location")
+  
+seq_wide_novent <- tax_asv_metadata %>% 
+  select(FeatureID, SEQUENCE_COUNT, depth_location) %>% 
+  group_by(depth_location, FeatureID) %>% 
+  summarise(seq_avg = mean(SEQUENCE_COUNT), .groups = "drop") %>% 
+  pivot_wider(names_from = FeatureID,
+              values_from = seq_avg,
+              values_fill = 0) %>% 
+  column_to_rownames("depth_location") %>%  as.matrix()
+
+
+clr_asv_matrix_novent <- data.frame(compositions::clr(seq_wide_novent))
+
+asv_list_novent <- colnames(seq_wide_novent)
+
+# asv_list
+meta_list_novent <- rownames(metadata_normalized_novent)
+clr_list_novent <- rownames(clr_asv_matrix_novent)
+setdiff(meta_list_novent, clr_list_novent)
+
+shared_samples_novent <- intersect(
+  rownames(clr_asv_matrix_novent),
+  rownames(metadata_normalized_novent))
+
+clr_asv_matrix_novent <- clr_asv_matrix_novent[shared_samples_novent, ]
+metadata_normalized_novent <- metadata_normalized_novent[shared_samples_novent, ]
+
+all(rownames(clr_asv_matrix_novent) == rownames(metadata_normalized_novent))
+#Large f-ratio means there is a lot of between group variance compared to within-group variance (independent variables have a greater influence on depdendent variables). Smaller f-ratios indicate the groups are similar to one another. 
+
+rda_clr_novent <- rda(clr_asv_matrix_novent ~ ., data = metadata_normalized_novent)
+
+summary(rda_clr_novent)
+
+anova_novent <- anova.cca(rda_clr_novent, by = "term")
+
+vif.cca(rda_clr_novent)
+
+```
+
+#CLR dendrogram and heatmap
+```{r}
+#library(compositions)
+
+CLR_df <- axial_metadata_nosurface
+
+clr_asv <- tax_asv_metadata %>% 
+  select(FeatureID, Sample, SEQUENCE_COUNT)
+
+clr_matrix <- clr_asv %>%
+  pivot_wider(
+    id_cols = FeatureID,
+    names_from = Sample,
+    values_from = SEQUENCE_COUNT,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("FeatureID") %>%
+  as.matrix()
+
+clr_matrix <- clr(t(clr_matrix))
+clr_matrix <- t(clr_matrix)
+
+sample_meta <- CLR_df %>%
+  distinct(Sample, sample_type)
+
+tax_meta <- tax_asv_metadata %>%
+  filter(FeatureID %in% clr_asv$FeatureID) %>% 
+  distinct(FeatureID, taxa, Species) %>% 
+  mutate(Species = case_when(
+      is.na(Species) ~ "Unknown",
+      TRUE ~ Species)) 
+
+sample_type_order <- c("Background", "Water Column", "Caldera Basin Water",
+                       "Above Vent", "Diffuse")
+
+clr_tax_asv <- clr_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("FeatureID") %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "Sample",
+    values_to = "clr"
+  ) %>%
+  left_join(sample_meta, by = "Sample") %>%
+  left_join(tax_meta, by = "FeatureID") %>%
+  group_by(taxa, Species, sample_type) %>%
+  summarise(avg_clr = mean(clr), .groups = "drop") %>% 
+  mutate(sample_type = factor(sample_type, levels = sample_type_order)) %>% 
+  arrange(taxa, Species) %>% 
+  mutate(Species = factor(Species, levels = unique(Species)))
+
+clr_tax_asv <- clr_tax_asv %>% 
+  filter(taxa %in% c("Stramenopiles-Bigyra", "Stramenopiles-Gyrista", 
+                     "Haptista", "Rhizaria-Radiolaria"))
+
+heatmap_revised <- ggplot(clr_tax_asv, aes(x = sample_type, y = Species, fill = avg_clr)) +
+  geom_tile() +
+  facet_grid(taxa ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/heatmap_revised.png", plot = heatmap_revised, width = 8, height = 12, dpi = 600, units = "in")
+
+#library(pheatmap)
+
+heatmap_df <- clr_tax_asv %>%
+  unite("taxa_species", taxa, Species, sep = " - ") %>%
+  pivot_wider(
+    names_from = sample_type,
+    values_from = avg_clr
+  ) %>%
+  column_to_rownames("taxa_species")
+
+dendro_revised <- pheatmap(
+  as.matrix(heatmap_df),
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  scale = "none",
+  color = colorRampPalette(c("#2166ac", "white", "#b2182b"))(100))
+
+ggsave("~/R/Axial2023/Figures/dendro_revised.png", plot = dendro_revised, width = 12, height = 12, dpi = 600, units = "in")
+
+mast <- tax_asv_metadata %>% 
+  filter(str_detect(Species, "MAST"))
+
+```
+
+#Whisker plot
+```{r}
+major_taxa <- tax_asv_metadata %>%
+  filter(taxa %in% c(
+    "Stramenopiles-Bigyra",
+    "Stramenopiles-Gyrista",
+    "Haptista",
+    "Rhizaria-Radiolaria"
+  )) %>%
+  group_by(Sample, taxa) %>%
+  summarise(
+    sequences = sum(SEQUENCE_COUNT),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    axial_metadata_nosurface %>%
+      select(Sample, sample_type),
+    by = "Sample"
+  ) %>%
+  group_by(Sample) %>%
+  mutate(
+    relative_abundance = sequences / sum(sequences)
+  ) %>%
+  ungroup()
+
+whisker <- ggplot(
+  major_taxa,
+  aes(x = sample_type, y = relative_abundance)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.7) +
+  facet_wrap(~ taxa) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/whisker_plot.png", plot = whisker, width = 8, height = 10, dpi = 600, units = "in")
+
+```
+
+#Remake and keep sample names
+```{r}
+#library(compositions)
+
+CLR_df <- axial_metadata_nosurface
+
+clr_asv <- tax_asv_metadata %>% 
+  select(FeatureID, Sample, SEQUENCE_COUNT)
+
+clr_matrix <- clr_asv %>%
+  pivot_wider(
+    id_cols = FeatureID,
+    names_from = Sample,
+    values_from = SEQUENCE_COUNT,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("FeatureID") %>%
+  as.matrix()
+
+clr_matrix <- clr(t(clr_matrix))
+clr_matrix <- t(clr_matrix)
+
+sample_meta <- CLR_df %>%
+  distinct(Sample, sample_type, depth_location, sample_name)
+
+tax_meta <- tax_asv_metadata %>%
+  filter(FeatureID %in% clr_asv$FeatureID) %>% 
+  distinct(FeatureID, taxa, Species) %>% 
+  mutate(Species = case_when(
+      is.na(Species) ~ "Unknown",
+      TRUE ~ Species)) 
+
+clr_tax_asv <- clr_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("FeatureID") %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "Sample",
+    values_to = "clr"
+  ) %>%
+  left_join(sample_meta, by = "Sample") %>%
+  left_join(tax_meta, by = "FeatureID") %>%
+  group_by(taxa, Species, depth_location, sample_name) %>% #Average replicates
+  summarise(avg_clr = mean(clr), .groups = "drop") %>%
+  arrange(taxa, Species) %>% 
+  mutate(Species = factor(Species, levels = unique(Species)))
+
+clr_tax_asv <- clr_tax_asv %>% 
+  filter(taxa %in% c("Stramenopiles-Bigyra", "Stramenopiles-Gyrista", 
+                     "Haptista", "Rhizaria-Radiolaria"))
+
+clr_heatmap_2 <- ggplot(clr_tax_asv, aes(x = depth_location, y = Species, fill = avg_clr)) +
+  geom_tile() +
+ facet_grid(
+  rows = vars(taxa),
+  cols = vars(sample_name),
+  scales = "free",
+  space = "free") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/clr_heatmap_2.png", plot = clr_heatmap_2, width = 12, height = 12, dpi = 600, units = "in")
+
+#library(pheatmap)
+
+heatmap_df <- clr_tax_asv %>%
+  unite("taxa_species", taxa, Species, sep = " - ") %>%
+  pivot_wider(
+    names_from = sample_type,
+    values_from = avg_clr
+  ) %>%
+  column_to_rownames("taxa_species")
+
+dendro_revised <- pheatmap(
+  as.matrix(heatmap_df),
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  scale = "none",
+  color = colorRampPalette(c("#2166ac", "white", "#b2182b"))(100))
+
+ggsave("~/R/Axial2023/Figures/dendro_revised.png", plot = dendro_revised, width = 12, height = 12, dpi = 600, units = "in")
+
+mast <- tax_asv_metadata %>% 
+  filter(str_detect(Species, "MAST"))
+
+```
+
+#Whisker plot
+```{r}
+major_taxa <- tax_asv_metadata %>%
+  filter(taxa %in% c(
+    "Stramenopiles-Bigyra",
+    "Stramenopiles-Gyrista",
+    "Haptista",
+    "Rhizaria-Radiolaria"
+  )) %>%
+  group_by(Sample, taxa) %>%
+  summarise(
+    sequences = sum(SEQUENCE_COUNT),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    axial_metadata_nosurface %>%
+      select(Sample, sample_type),
+    by = "Sample"
+  ) %>%
+  group_by(Sample) %>%
+  mutate(
+    relative_abundance = sequences / sum(sequences)
+  ) %>%
+  ungroup()
+
+whisker <- ggplot(
+  major_taxa,
+  aes(x = sample_type, y = relative_abundance)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.7) +
+  facet_wrap(~ taxa) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/whisker_plot.png", plot = whisker, width = 8, height = 10, dpi = 600, units = "in")
+
+```
+
+#ASV table
+```{r}
+ASV_table <- tax_asv_metadata %>% 
+  filter(Class %in% c("Gyrista", "Bigyra", "Radiolaria")) %>% 
+  filter(Supergroup == "Haptista") %>% 
+  select(FeatureID, taxa, Genus, Species) %>% 
+  distinct() %>% mutate(Species = case_when(
+    is.na(Species) ~ "Unknown",
+    TRUE ~ Species)) 
+
+write.csv(ASV_table, file = "~/R/SAR_ASV_table.csv", row.names = FALSE)
+
+
+#
+CLR_df <- axial_metadata_nosurface
+
+clr_asv <- tax_asv_metadata %>% 
+  select(FeatureID, Sample, SEQUENCE_COUNT)
+
+clr_matrix <- clr_asv %>%
+  pivot_wider(
+    id_cols = FeatureID,
+    names_from = Sample,
+    values_from = SEQUENCE_COUNT,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("FeatureID") %>%
+  as.matrix()
+
+clr_matrix <- clr(t(clr_matrix))
+clr_matrix <- t(clr_matrix)
+
+sample_meta <- CLR_df %>%
+  distinct(Sample, sample_type, depth_location, sample_name)
+
+tax_meta_definedASV <- tax_asv_metadata %>%
+  filter(FeatureID %in% clr_asv$FeatureID) %>% 
+  distinct(FeatureID, taxa, Species) %>% 
+  mutate(Species = case_when(
+      is.na(Species) ~ "Unknown",
+      TRUE ~ Species)) %>% 
+  mutate(ASV_Species = paste(FeatureID, Species, sep = "-"))
+
+clr_tax_asv_definedASV <- clr_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("FeatureID") %>%
+  pivot_longer(
+    cols = -FeatureID,
+    names_to = "Sample",
+    values_to = "clr"
+  ) %>%
+  left_join(sample_meta, by = "Sample") %>%
+  left_join(tax_meta_definedASV, by = "FeatureID") %>%
+  group_by(taxa, ASV_Species, depth_location, sample_name) %>%
+  summarise(avg_clr = mean(clr), .groups = "drop") %>% 
+  arrange(taxa, ASV_Species) %>% 
+  mutate(ASV_Species = factor(ASV_Species, levels = unique(ASV_Species)))
+
+clr_tax_asv_definedASV <- clr_tax_asv_definedASV %>% 
+  filter(taxa %in% c("Stramenopiles-Bigyra", "Stramenopiles-Gyrista", 
+                     "Haptista", "Rhizaria-Radiolaria"))
+
+clr_ASV_big <- clr_tax_asv_definedASV %>% 
+  filter(taxa == "Stramenopiles-Bigyra")
+
+ASV_level_big <- ggplot(clr_ASV_big, aes(x = depth_location, y = ASV_Species, fill = avg_clr)) +
+  geom_tile() +
+ facet_grid(
+  rows = vars(taxa),
+  cols = vars(sample_name),
+  scales = "free",
+  space = "free") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/asv_level_big.png", plot = ASV_level_big, width = 12, height = 30, dpi = 600, units = "in")
+
+clr_ASV_gyr <- clr_tax_asv_definedASV %>% 
+  filter(taxa == "Stramenopiles-Gyrista")
+
+ASV_level_gyr <- ggplot(clr_ASV_gyr, aes(x = depth_location, y = ASV_Species, fill = avg_clr)) +
+  geom_tile() +facet_grid(
+  rows = vars(taxa),
+  cols = vars(sample_name),
+  scales = "free",
+  space = "free") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/asv_level_gyr.png", plot = ASV_level_gyr, width = 12, height = 30, dpi = 600, units = "in")
+
+clr_ASV_hap <- clr_tax_asv_definedASV %>% 
+  filter(taxa == "Haptista")
+
+ASV_level_hap <- ggplot(clr_ASV_hap, aes(x = depth_location, y = ASV_Species, fill = avg_clr)) +
+  geom_tile() +
+  facet_grid(
+  rows = vars(taxa),
+  cols = vars(sample_name),
+  scales = "free",
+  space = "free") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/asv_level_hap.png", plot = ASV_level_hap, width = 12, height = 30, dpi = 600, units = "in")
+
+clr_ASV_rad <- clr_tax_asv_definedASV %>% 
+  filter(taxa == "Rhizaria-Radiolaria")
+
+ASV_level_rad <- ggplot(clr_ASV_rad, aes(x = depth_location, y = ASV_Species, fill = avg_clr)) +
+  geom_tile() +
+  facet_grid(
+  rows = vars(taxa),
+  cols = vars(sample_name),
+  scales = "free",
+  space = "free") +
+  scale_fill_gradient2(
+    low = "#2166ac",
+    mid = "white",
+    high = "#b2182b",
+    midpoint = 0) +
+  theme_bw() +
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+
+ggsave("~/R/Axial2023/Figures/asv_level_rad.png", plot = ASV_level_rad, width = 12, height = 30, dpi = 600, units = "in")
+
+```
+#Citations
+```{r}
+citation("tidyverse")
+```
